@@ -1,0 +1,27 @@
+# ShieldHer Backend Environment Variables
+
+# PostgreSQL connection string
+# For local: postgresql://postgres:password@localhost:5432/shieldher
+# For Supabase/Neon free tier: get the connection string from their dashboard
+DATABASE_URL=postgresql://postgres:password@localhost:5432/shieldher
+
+# JWT Secret Key (change this to something random!)
+JWT_SECRET_KEY=shieldher-hackathon-secret-change-me-2026
+
+# OpenAI API Key
+OPENAI_API_KEY=your-openai-api-key-here
+OPENAI_ANALYSIS_MODEL=gpt-4o-mini
+OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
+
+# -------------------------------------------------------
+# Twilio SMS Credentials (required for real SMS delivery)
+# Sign up free at https://www.twilio.com/try-twilio
+# -------------------------------------------------------
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=your-twilio-auth-token
+TWILIO_FROM_NUMBER=+15551234567
+
+# Optional: A real phone number to SMS when user opts to notify police.
+# Real emergency lines (100, 911) don't accept SMS — this would be a
+# police liaison / NGO number configured for your deployment.
+POLICE_SMS_NUMBER=
