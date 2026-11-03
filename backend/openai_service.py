@@ -7,9 +7,11 @@ import json
 import os
 from typing import Any
 
+from pathlib import Path
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
+load_dotenv(Path(__file__).resolve().parent / ".env")
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()

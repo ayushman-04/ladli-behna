@@ -3,11 +3,19 @@ ShieldHer — Database Setup (PostgreSQL)
 Creates tables and provides helper functions for all DB operations.
 """
 
+import sys
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from pathlib import Path
 from dotenv import load_dotenv
 
+load_dotenv(Path(__file__).resolve().parent / ".env")
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/shieldher")

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useEmergency, useToast } from '../App'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const WS_BASE = API_BASE.replace(/^http/, 'ws')
 
 export default function ShieldMode() {
@@ -35,6 +35,9 @@ export default function ShieldMode() {
   const [uploadResult, setUploadResult] = useState(null)
   const [recordedBlob, setRecordedBlob] = useState(null)
   const [selectedFile, setSelectedFile] = useState(null)
+  const [audioUrl, setAudioUrl] = useState(null)
+  const [micPermissionDenied, setMicPermissionDenied] = useState(false)
+  const [analysisStatus, setAnalysisStatus] = useState('idle') // idle | processing | available | unavailable
 
   const canvasRef = useRef(null)
   const animationRef = useRef(null)
@@ -47,6 +50,14 @@ export default function ShieldMode() {
   const locationIntervalRef = useRef(null)
   const pingIntervalRef = useRef(null)
   const activeRef = useRef(false)
+
+  // --- Upload / Record refs ---
+  const fileInputRef = useRef(null)
+  const uploadRecorderRef = useRef(null)   // separate MediaRecorder for the upload section
+  const uploadStreamRef = useRef(null)     // mic stream used only for upload recording
+  const recordingTimerRef = useRef(null)   // setInterval id for the duration counter
+  const recordingChunksRef = useRef([])    // audio chunks accumulated during recording
+  const isRecordingRef = useRef(false)     // synchronous lock preventing overlapping recording sessions
 
   const sendWsJson = useCallback((payload) => {
     const ws = websocketRef.current
@@ -304,16 +315,30 @@ export default function ShieldMode() {
   }, [threatLevel, showToast])
 
   const startAudioStreaming = useCallback((stream) => {
-    if (!stream || !window.MediaRecorder) {
+    const hasMediaRecorder = typeof window !== 'undefined' && typeof window.MediaRecorder !== 'undefined'
+    if (!stream || !hasMediaRecorder) {
       showToast('Audio streaming not supported in this browser', 'warning')
       return
     }
 
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : 'audio/webm'
+    const isTypeSupported = typeof window.MediaRecorder.isTypeSupported === 'function'
+      ? (type) => window.MediaRecorder.isTypeSupported(type)
+      : () => false
 
-    const recorder = new MediaRecorder(stream, { mimeType })
+    const mimeType = isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : ''
+
+    let recorder
+    try {
+      recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
+    } catch (e) {
+      showToast('Failed to initialize audio streaming', 'warning')
+      return
+    }
+
     recorder.ondataavailable = async (event) => {
       const ws = websocketRef.current
       if (!event.data.size || !ws || ws.readyState !== WebSocket.OPEN) return
@@ -449,6 +474,370 @@ export default function ShieldMode() {
     })
   }
 
+  // ================================================================
+  // UPLOAD / RECORD HELPERS  (fixes ReferenceError: not defined)
+  // ================================================================
+
+  /** Format seconds as MM:SS */
+  const formatTime = (seconds) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0')
+    const s = (seconds % 60).toString().padStart(2, '0')
+    return `${m}:${s}`
+  }
+
+  /** Discard the current recording or selected file and reset upload state */
+  const discardRecording = useCallback(() => {
+    if (isRecordingRef.current) {
+      isRecordingRef.current = false
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current)
+        recordingTimerRef.current = null
+      }
+      if (uploadRecorderRef.current && uploadRecorderRef.current.state !== 'inactive') {
+        try { uploadRecorderRef.current.stop() } catch (e) { /* ignore */ }
+      }
+      if (uploadStreamRef.current) {
+        uploadStreamRef.current.getTracks().forEach(t => t.stop())
+        uploadStreamRef.current = null
+      }
+      uploadRecorderRef.current = null
+      setRecording(false)
+    }
+
+    setRecordedBlob(null)
+    setSelectedFile(null)
+    setUploadResult(null)
+    setAnalysisStatus('idle')
+    setRecordingTime(0)
+    recordingChunksRef.current = []
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }, [])
+
+  // Safely manage audio preview URL and revoke when done to prevent memory leaks
+  useEffect(() => {
+    const source = recordedBlob || selectedFile
+    if (source) {
+      const url = URL.createObjectURL(source)
+      setAudioUrl(url)
+      return () => {
+        URL.revokeObjectURL(url)
+      }
+    } else {
+      setAudioUrl(null)
+    }
+  }, [recordedBlob, selectedFile])
+
+  /** Stop mic stream and timer used by the upload recorder */
+  const _stopUploadRecorderCleanup = useCallback(() => {
+    isRecordingRef.current = false
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+    if (uploadRecorderRef.current && uploadRecorderRef.current.state !== 'inactive') {
+      try { uploadRecorderRef.current.stop() } catch (e) { /* ignore */ }
+    }
+    if (uploadStreamRef.current) {
+      uploadStreamRef.current.getTracks().forEach(t => t.stop())
+      uploadStreamRef.current = null
+    }
+    uploadRecorderRef.current = null
+    setRecording(false)
+  }, [])
+
+  /** Start a new audio recording for the upload / analyze section */
+  const startRecording = useCallback(async () => {
+    // Guard: synchronous ref lock prevents overlapping recording sessions
+    if (isRecordingRef.current) return
+    isRecordingRef.current = true
+
+    setMicPermissionDenied(false)
+    discardRecording()
+    setSelectedFile(null)
+
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      isRecordingRef.current = false
+      showToast('Microphone access is not supported in this browser.', 'error')
+      return
+    }
+
+    let stream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    } catch (err) {
+      isRecordingRef.current = false
+      setRecording(false)
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setMicPermissionDenied(true)
+        showToast('Microphone permission denied. Please allow mic access and try again.', 'error')
+      } else {
+        showToast(`Microphone error: ${err.message || err.name}`, 'error')
+      }
+      return
+    }
+
+    uploadStreamRef.current = stream
+    recordingChunksRef.current = []
+
+    const hasMediaRecorder = typeof window !== 'undefined' && typeof window.MediaRecorder !== 'undefined'
+    if (!hasMediaRecorder) {
+      showToast('Audio recording is not supported in this browser', 'error')
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop())
+        uploadStreamRef.current = null
+      }
+      isRecordingRef.current = false
+      setRecording(false)
+      return
+    }
+
+    const isTypeSupported = typeof window.MediaRecorder.isTypeSupported === 'function'
+      ? (type) => window.MediaRecorder.isTypeSupported(type)
+      : () => false
+
+    const mimeType = isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : ''
+
+    let recorder
+    try {
+      recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream)
+    } catch (err) {
+      showToast(`Recording not supported in this browser: ${err.message}`, 'error')
+      stream.getTracks().forEach(t => t.stop())
+      uploadStreamRef.current = null
+      isRecordingRef.current = false
+      setRecording(false)
+      return
+    }
+
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        recordingChunksRef.current.push(e.data)
+      }
+    }
+
+    recorder.onerror = (e) => {
+      showToast(`Recording error: ${e.error?.message || 'Unknown error'}`, 'error')
+      isRecordingRef.current = false
+      setRecording(false)
+      _stopUploadRecorderCleanup()
+    }
+
+    recorder.onstop = () => {
+      const chunks = recordingChunksRef.current
+      if (chunks.length > 0) {
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+        setRecordedBlob(blob)
+      } else {
+        showToast('No audio was captured. Check your microphone.', 'warning')
+      }
+      recordingChunksRef.current = []
+    }
+
+    uploadRecorderRef.current = recorder
+    try {
+      recorder.start(250) // collect chunks every 250 ms
+      setRecording(true)
+      setRecordingTime(0)
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1)
+      }, 1000)
+    } catch (startErr) {
+      showToast(`Failed to start recording: ${startErr.message}`, 'error')
+      _stopUploadRecorderCleanup()
+    }
+  }, [discardRecording, showToast, _stopUploadRecorderCleanup])
+
+  /** Stop the active upload recording */
+  const stopRecording = useCallback(() => {
+    isRecordingRef.current = false
+    const recorder = uploadRecorderRef.current
+
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+
+    if (recorder && recorder.state !== 'inactive') {
+      try {
+        recorder.requestData() // flush remaining data
+        recorder.stop()
+      } catch (e) {
+        console.warn('stopRecording error:', e)
+      }
+    }
+
+    if (uploadStreamRef.current) {
+      uploadStreamRef.current.getTracks().forEach(t => t.stop())
+      uploadStreamRef.current = null
+    }
+
+    uploadRecorderRef.current = null
+    setRecording(false)
+  }, [])
+
+  /** Handle audio file picked via the file input */
+  const handleFileSelect = useCallback((e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    // Reset any previous recording / result
+    discardRecording()
+    setSelectedFile(file)
+    setUploadResult(null)
+    setAnalysisStatus('idle')
+
+    // Reset the file input value so the same file can be re-selected later
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }, [discardRecording])
+
+  /** Upload and analyze the current recording or selected file */
+  const analyzeAudio = useCallback(async () => {
+    const audioSource = recordedBlob || selectedFile
+    if (!audioSource) return
+    if (uploadingAudio) return // prevent duplicate submissions
+
+    const token = localStorage.getItem('shieldher_token')
+    if (!token) {
+      showToast('Please log in to use audio analysis', 'error')
+      return
+    }
+
+    setUploadingAudio(true)
+    setUploadResult(null)
+    setAnalysisStatus('processing')
+
+    try {
+      const form = new FormData()
+      const filename = selectedFile
+        ? selectedFile.name
+        : `recording_${Date.now()}.webm`
+      form.append('audio', audioSource, filename)
+
+      // Optionally attach location inside try lifecycle
+      if (navigator.geolocation) {
+        try {
+          await new Promise((resolve) => {
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                form.append('latitude', pos.coords.latitude)
+                form.append('longitude', pos.coords.longitude)
+                resolve()
+              },
+              () => resolve(), // location optional — continue without it
+              { timeout: 3000 }
+            )
+          })
+        } catch (geoErr) {
+          // Geolocation failure is non-blocking
+        }
+      }
+
+      const res = await fetch(`${API_BASE}/api/audio/upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      })
+
+      let data = null
+      try {
+        data = await res.json()
+      } catch (parseErr) {
+        data = null
+      }
+
+      if (!res.ok) {
+        const errMsg = data?.detail || `Server error ${res.status}`
+        showToast(`Upload failed: ${errMsg}`, 'error')
+        setAnalysisStatus('unavailable')
+        // Show ANALYSIS UNAVAILABLE — never classify an API failure as SAFE
+        setUploadResult({
+          threat_level: 'ANALYSIS UNAVAILABLE',
+          confidence: 0,
+          reason: errMsg,
+          recommended_action: 'Analysis service is unavailable. Manual SOS is available below.',
+          transcript: '',
+        })
+        return
+      }
+
+      const analysis = data?.analysis
+      if (!analysis) {
+        showToast('Unexpected response from server', 'error')
+        setAnalysisStatus('unavailable')
+        setUploadResult({
+          threat_level: 'ANALYSIS UNAVAILABLE',
+          confidence: 0,
+          reason: 'Server returned an empty analysis.',
+          recommended_action: 'Try again or use manual SOS if needed.',
+          transcript: '',
+        })
+        return
+      }
+
+      // Detect API key absent, demo mode, or error reported by backend
+      const reasonText = (analysis.reason || '').toLowerCase()
+      const isUnavailable =
+        analysis.threat_level === 'ANALYSIS UNAVAILABLE' ||
+        analysis.threat_level === 'ERROR' ||
+        (analysis.threat_level === 'SAFE' && analysis.confidence === 0) ||
+        reasonText.includes('not configured') ||
+        reasonText.includes('demo mode') ||
+        reasonText.includes('temporarily unavailable') ||
+        reasonText.includes('analysis error') ||
+        reasonText.includes('error code') ||
+        reasonText.includes('incorrect api key') ||
+        reasonText.includes('invalid_api_key') ||
+        reasonText.includes('api key') ||
+        reasonText.includes('failed')
+
+      if (isUnavailable) {
+        setAnalysisStatus('unavailable')
+        setUploadResult({
+          ...analysis,
+          threat_level: 'ANALYSIS UNAVAILABLE',
+          confidence: 0,
+          reason: analysis.reason || 'AI analysis is unavailable (API key not configured or invalid). Local keyword-based detection remains active.',
+          recommended_action: 'Use manual SOS if you feel unsafe. Stay alert.',
+        })
+      } else {
+        setAnalysisStatus('available')
+        setUploadResult(analysis)
+        if (analysis.threat_level === 'DANGER') {
+          showToast('DANGER detected in audio! Stay safe.', 'error')
+        } else if (analysis.threat_level === 'SUSPICIOUS') {
+          showToast('Suspicious activity detected in audio.', 'warning')
+        } else {
+          showToast('Audio analysis complete — environment appears safe.', 'success')
+        }
+      }
+    } catch (err) {
+      const msg = err?.message || 'Network error'
+      showToast(`Analysis failed: ${msg}`, 'error')
+      setAnalysisStatus('unavailable')
+      setUploadResult({
+        threat_level: 'ANALYSIS UNAVAILABLE',
+        confidence: 0,
+        reason: `Connection error: ${msg}`,
+        recommended_action: 'Check that backend is running and try again. Use manual SOS if in danger.',
+        transcript: '',
+      })
+    } finally {
+      setUploadingAudio(false)
+    }
+  }, [recordedBlob, selectedFile, uploadingAudio, showToast])
+
+  // Cleanup upload recorder on unmount
+  useEffect(() => () => {
+    _stopUploadRecorderCleanup()
+  }, [_stopUploadRecorderCleanup])
+
   useEffect(() => cleanupRealtime, [cleanupRealtime])
 
   useEffect(() => {
@@ -571,6 +960,13 @@ export default function ShieldMode() {
           Record a clip or pick an audio file &mdash; AI will check for threats.
         </p>
 
+        {/* Microphone permission denied banner */}
+        {micPermissionDenied && (
+          <div role="alert" style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: '10px', padding: '10px 14px', marginBottom: '12px', fontSize: '0.82rem', color: 'var(--danger, #ef4444)', lineHeight: 1.5 }}>
+            <strong>Microphone access denied.</strong> Please allow microphone permissions in your browser settings and reload the page.
+          </div>
+        )}
+
         {/* Record / Stop */}
         <div className="upload-actions">
           {!recording ? (
@@ -611,32 +1007,51 @@ export default function ShieldMode() {
               <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>
                 {recordedBlob ? `Recorded clip (${formatTime(recordingTime)})` : selectedFile?.name}
               </span>
-              <button className="btn btn-ghost btn-sm" onClick={() => { discardRecording(); setSelectedFile(null) }} aria-label="Discard recording">
+              <button className="btn btn-ghost btn-sm" onClick={discardRecording} aria-label="Discard recording">
                 &times;
               </button>
             </div>
 
-            {recordedBlob && <audio controls src={URL.createObjectURL(recordedBlob)} style={{ width: '100%', marginBottom: '10px' }} />}
-            {selectedFile && <audio controls src={URL.createObjectURL(selectedFile)} style={{ width: '100%', marginBottom: '10px' }} />}
+            {audioUrl && <audio controls src={audioUrl} style={{ width: '100%', marginBottom: '10px' }} />}
 
             <button id="shield-analyze-btn" className="btn btn-primary btn-full" onClick={analyzeAudio} disabled={uploadingAudio}>
               {uploadingAudio ? (
-                <><span className="spin" aria-hidden="true">⏳</span> Analyzing with AI&hellip;</>
-              ) : 'Analyze for Threats'}
+                <><span className="spin" aria-hidden="true">⏳</span> Processing&hellip;</>
+              ) : analysisStatus === 'processing' ? 'Processing…' : 'Analyze for Threats'}
             </button>
           </div>
         )}
 
+        {/* Analysis status label */}
+        {analysisStatus === 'processing' && (
+          <p role="status" aria-live="polite" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--muted-foreground)', textAlign: 'center', marginTop: '10px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            ⏳ Processing audio…
+          </p>
+        )}
+        {analysisStatus === 'unavailable' && !uploadResult && (
+          <p role="alert" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--danger, #ef4444)', textAlign: 'center', marginTop: '10px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            ⚠ ANALYSIS UNAVAILABLE
+          </p>
+        )}
+
         {/* Upload result */}
         {uploadResult && (
-          <div className={`upload-result glass-card-static threat-indicator ${uploadResult.threat_level?.toLowerCase()}`} style={{ marginTop: '14px', textAlign: 'left' }} role="alert">
+          <div
+            className={`upload-result glass-card-static${uploadResult.threat_level === 'ANALYSIS UNAVAILABLE' ? '' : ` threat-indicator ${uploadResult.threat_level?.toLowerCase()}`}`}
+            style={uploadResult.threat_level === 'ANALYSIS UNAVAILABLE'
+              ? { marginTop: '14px', textAlign: 'left', border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.07)', borderRadius: '12px', padding: '14px' }
+              : { marginTop: '14px', textAlign: 'left' }}
+            role="alert"
+          >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-              <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.78rem', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.78rem', letterSpacing: '0.06em', textTransform: 'uppercase', color: uploadResult.threat_level === 'ANALYSIS UNAVAILABLE' ? 'var(--danger, #ef4444)' : undefined }}>
                 {uploadResult.threat_level}
               </span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', color: 'var(--muted-foreground)' }}>
-                {Math.round((uploadResult.confidence || 0) * 100)}% confidence
-              </span>
+              {uploadResult.threat_level !== 'ANALYSIS UNAVAILABLE' && (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', color: 'var(--muted-foreground)' }}>
+                  {Math.round((uploadResult.confidence || 0) * 100)}% confidence
+                </span>
+              )}
             </div>
 
             {uploadResult.transcript && (
@@ -653,8 +1068,32 @@ export default function ShieldMode() {
               <p style={{ fontFamily: 'var(--font-mono)', fontSize: '0.66rem', color: 'var(--muted-foreground)', marginBottom: '3px', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Recommended Action</p>
               <p style={{ fontSize: '0.83rem', fontWeight: 600 }}>{uploadResult.recommended_action}</p>
             </div>
+
+            {/* Quick manual SOS when threat is danger or analysis unavailable */}
+            {(uploadResult.threat_level === 'DANGER' || uploadResult.threat_level === 'ANALYSIS UNAVAILABLE') && (
+              <button
+                id="shield-result-sos-btn"
+                className="btn btn-danger btn-full"
+                onClick={() => triggerEmergency('shield_audio')}
+                style={{ marginTop: '12px' }}
+              >
+                🚨 Trigger Emergency SOS
+              </button>
+            )}
           </div>
         )}
+
+        {/* Persistent Manual SOS trigger */}
+        <div style={{ marginTop: '16px' }}>
+          <button
+            id="shield-manual-sos-btn"
+            className="btn btn-danger btn-full"
+            onClick={() => triggerEmergency('shield_manual')}
+            aria-label="Trigger Emergency SOS"
+          >
+            🚨 Emergency SOS
+          </button>
+        </div>
       </div>
 
       {/* How it works — inactive only */}
