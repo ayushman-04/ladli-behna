@@ -29,16 +29,58 @@ const TrashIcon = () => (
   </svg>
 )
 
+export function validateIndianMobile(phoneInput) {
+  if (!phoneInput || typeof phoneInput !== 'string') {
+    return { valid: false, error: 'Phone number is required.' }
+  }
+
+  const cleaned = phoneInput.replace(/[\s\-()]/g, '').trim()
+  if (!cleaned) {
+    return { valid: false, error: 'Phone number is required.' }
+  }
+
+  if (/^\+91[6-9]\d{9}$/.test(cleaned)) {
+    return { valid: true, normalized: cleaned, error: null }
+  }
+  if (/^91[6-9]\d{9}$/.test(cleaned)) {
+    return { valid: true, normalized: `+${cleaned}`, error: null }
+  }
+  if (/^0[6-9]\d{9}$/.test(cleaned)) {
+    return { valid: true, normalized: `+91${cleaned.slice(1)}`, error: null }
+  }
+  if (/^[6-9]\d{9}$/.test(cleaned)) {
+    return { valid: true, normalized: `+91${cleaned}`, error: null }
+  }
+
+  const digitsOnly = cleaned.replace(/\D/g, '')
+  if (!digitsOnly) {
+    return { valid: false, error: 'Phone number is required.' }
+  }
+  if (digitsOnly.length < 10) {
+    return { valid: false, error: 'Phone number is too short. Enter a 10-digit Indian mobile number.' }
+  }
+  if (digitsOnly.length === 10 && !/^[6-9]/.test(digitsOnly)) {
+    return { valid: false, error: 'Indian mobile numbers must start with 6, 7, 8, or 9.' }
+  }
+
+  return {
+    valid: false,
+    error: 'Please enter a valid 10-digit Indian mobile number (e.g. 9876543210 or +91 9876543210).'
+  }
+}
+
 export default function Contacts() {
   const navigate = useNavigate()
   const { showToast } = useToast()
   const [contacts, setContacts] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
 
   const [name, setName]               = useState('')
   const [phone, setPhone]             = useState('')
   const [relationship, setRelationship] = useState('')
+  const [errors, setErrors]           = useState({})
 
   useEffect(() => { loadContacts() }, [])
 
@@ -55,17 +97,51 @@ export default function Contacts() {
 
   const handleAdd = async (e) => {
     e.preventDefault()
+
+    const newErrors = {}
+    const trimmedName = name.trim()
+    const trimmedRel = relationship.trim()
+
+    if (!trimmedName) {
+      newErrors.name = 'Contact name is required.'
+    }
+
+    if (!trimmedRel) {
+      newErrors.relationship = 'Relationship is mandatory (e.g. Mother, Sister, Friend).'
+    }
+
+    const phoneValidation = validateIndianMobile(phone)
+    if (!phoneValidation.valid) {
+      newErrors.phone = phoneValidation.error
+    }
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors)
+      showToast('Please fix the validation errors before saving.', 'error')
+      return
+    }
+
+    setSubmitting(true)
     try {
       await apiFetch('/api/contacts', {
         method: 'POST',
-        body: JSON.stringify({ name, phone, relationship: relationship || null }),
+        body: JSON.stringify({
+          name: trimmedName,
+          phone: phoneValidation.normalized,
+          relationship: trimmedRel,
+        }),
       })
-      showToast('Contact added!', 'success')
-      setName(''); setPhone(''); setRelationship('')
+      showToast('Contact added successfully!', 'success')
+      setName('')
+      setPhone('')
+      setRelationship('')
+      setErrors({})
       setShowForm(false)
       loadContacts()
     } catch (err) {
       showToast(err.message, 'error')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -113,7 +189,7 @@ export default function Contacts() {
       <button
         id="contacts-add-btn"
         className={`btn btn-full ${showForm ? 'btn-outline' : 'btn-primary'}`}
-        onClick={() => setShowForm(!showForm)}
+        onClick={() => { setShowForm(!showForm); setErrors({}) }}
         style={{ marginBottom: '18px' }}
       >
         {showForm ? 'Cancel' : '+ Add Emergency Contact'}
@@ -125,21 +201,58 @@ export default function Contacts() {
           className="glass-card-static add-contact-form slide-up"
           onSubmit={handleAdd}
           style={{ marginBottom: '18px' }}
+          noValidate
         >
           <div className="form-group">
-            <label className="form-label" htmlFor="contact-name">Name</label>
-            <input id="contact-name" type="text" className="form-input" placeholder="Contact name" value={name} onChange={e => setName(e.target.value)} required />
+            <label className="form-label" htmlFor="contact-name">Name *</label>
+            <input
+              id="contact-name"
+              type="text"
+              className="form-input"
+              placeholder="Contact name"
+              value={name}
+              onChange={e => {
+                setName(e.target.value)
+                if (errors.name) setErrors(prev => ({ ...prev, name: null }))
+              }}
+              required
+            />
+            {errors.name && <div className="form-error" role="alert">{errors.name}</div>}
           </div>
           <div className="form-group">
-            <label className="form-label" htmlFor="contact-phone">Phone Number</label>
-            <input id="contact-phone" type="tel" className="form-input" placeholder="+91 9876543210" value={phone} onChange={e => setPhone(e.target.value)} required />
+            <label className="form-label" htmlFor="contact-phone">Indian Mobile Number *</label>
+            <input
+              id="contact-phone"
+              type="tel"
+              className="form-input"
+              placeholder="e.g. 9876543210 or +91 9876543210"
+              value={phone}
+              onChange={e => {
+                setPhone(e.target.value)
+                if (errors.phone) setErrors(prev => ({ ...prev, phone: null }))
+              }}
+              required
+            />
+            {errors.phone && <div className="form-error" role="alert">{errors.phone}</div>}
           </div>
           <div className="form-group">
-            <label className="form-label" htmlFor="contact-rel">Relationship <span style={{ textTransform: 'none', fontWeight: 400 }}>(optional)</span></label>
-            <input id="contact-rel" type="text" className="form-input" placeholder="e.g. Mother, Friend" value={relationship} onChange={e => setRelationship(e.target.value)} />
+            <label className="form-label" htmlFor="contact-rel">Relationship *</label>
+            <input
+              id="contact-rel"
+              type="text"
+              className="form-input"
+              placeholder="e.g. Mother, Sister, Friend, Spouse"
+              value={relationship}
+              onChange={e => {
+                setRelationship(e.target.value)
+                if (errors.relationship) setErrors(prev => ({ ...prev, relationship: null }))
+              }}
+              required
+            />
+            {errors.relationship && <div className="form-error" role="alert">{errors.relationship}</div>}
           </div>
-          <button type="submit" className="btn btn-safe btn-full">
-            Save Contact
+          <button type="submit" className="btn btn-safe btn-full" disabled={submitting}>
+            {submitting ? 'Saving Contact…' : 'Save Contact'}
           </button>
         </form>
       )}
