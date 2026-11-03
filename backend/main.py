@@ -4,6 +4,7 @@ All API routes in one file for hackathon simplicity.
 """
 
 import os
+import re
 import uuid
 import asyncio
 import requests
@@ -190,10 +191,42 @@ class UpdateProfileRequest(BaseModel):
     phone: Optional[str] = None
     safe_word: Optional[str] = None
 
+def normalize_indian_mobile(phone_input: str) -> str:
+    """
+    Validate and normalize Indian mobile numbers to E.164 (+91XXXXXXXXXX).
+    Accepts:
+      - 10-digit number starting with 6, 7, 8, or 9
+      - +91 / 91 / 0 prefix with 10-digit number starting with 6-9
+      - Optional spaces, hyphens, and parentheses
+    Raises ValueError with a user-friendly error message if invalid.
+    """
+    if not phone_input or not isinstance(phone_input, str):
+        raise ValueError("Phone number is required.")
+
+    cleaned = re.sub(r"[\s\-()]", "", phone_input.strip())
+    if re.fullmatch(r"\+91[6-9]\d{9}", cleaned):
+        return cleaned
+    if re.fullmatch(r"91[6-9]\d{9}", cleaned):
+        return f"+{cleaned}"
+    if re.fullmatch(r"0[6-9]\d{9}", cleaned):
+        return f"+91{cleaned[1:]}"
+    if re.fullmatch(r"[6-9]\d{9}", cleaned):
+        return f"+91{cleaned}"
+
+    digits_only = re.sub(r"\D", "", cleaned)
+    if not digits_only:
+        raise ValueError("Phone number is required.")
+    if len(digits_only) < 10:
+        raise ValueError("Phone number is too short. Please enter a valid 10-digit Indian mobile number.")
+    if len(digits_only) == 10 and not digits_only.startswith(("6", "7", "8", "9")):
+        raise ValueError("Indian mobile numbers must start with 6, 7, 8, or 9.")
+
+    raise ValueError("Invalid phone number. Please enter a valid 10-digit Indian mobile number (e.g. 9876543210 or +91 9876543210).")
+
 class ContactRequest(BaseModel):
     name: str
     phone: str
-    relationship: Optional[str] = None
+    relationship: str
 
 class TranscriptRequest(BaseModel):
     transcript: str
@@ -292,8 +325,21 @@ def list_contacts(user_id: int = Depends(get_current_user_id)):
 
 @app.post("/api/contacts")
 def create_contact(req: ContactRequest, user_id: int = Depends(get_current_user_id)):
-    """Add a new emergency contact."""
-    contact = add_contact(user_id, req.name, req.phone, req.relationship)
+    """Add a new emergency contact with validation for Indian mobile numbers and mandatory relationship."""
+    name = (req.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Contact name is required.")
+
+    relationship = (req.relationship or "").strip()
+    if not relationship:
+        raise HTTPException(status_code=422, detail="Relationship is mandatory.")
+
+    try:
+        normalized_phone = normalize_indian_mobile(req.phone or "")
+    except ValueError as ve:
+        raise HTTPException(status_code=422, detail=str(ve))
+
+    contact = add_contact(user_id, name, normalized_phone, relationship)
     return {"contact": contact}
 
 
