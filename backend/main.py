@@ -21,7 +21,7 @@ if str(BACKEND_DIR) not in sys.path:
 import asyncio
 import requests
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -79,8 +79,10 @@ from database import (
     add_contact, get_contacts, delete_contact,
     create_incident, get_incidents, resolve_incident,
     create_report, get_heatmap_data,
-    create_safewalk, get_active_safewalk, end_safewalk,
-    claim_overdue_safewalks, update_safewalk_status
+    create_safewalk, get_active_safewalk, get_safewalk_by_id,
+    checkin_safewalk, extend_safewalk_eta, end_safewalk,
+    add_safewalk_event, get_safewalk_events,
+    flag_grace_period_safewalks, claim_overdue_safewalks, update_safewalk_status
 )
 from auth import hash_password, verify_password, create_token, get_current_user_id
 from openai_service import analyze_transcript, analyze_audio_file
@@ -118,22 +120,36 @@ def _build_safewalk_overdue_message(user: dict, walk: dict) -> str:
     maps_link = f"https://www.google.com/maps?q={walk['dest_lat']},{walk['dest_lng']}"
     eta = walk.get("eta")
     eta_display = eta.strftime("%I:%M %p, %b %d %Y") if hasattr(eta, "strftime") else str(eta)
+    mode_name = (walk.get("mode") or "journey").replace("_", " ").title()
     return (
-        f"\U0001f6a8 SAFEWALK ALERT from {user['name']}!\n"
-        f"They have not marked their SafeWalk as complete by the expected arrival time.\n"
+        f"🚨 SAFEWALK ALERT from {user['name']}!\n"
+        f"SafeWalk arrival is unconfirmed ({mode_name} mode).\n"
         f"Destination: {walk.get('dest_name', 'Unknown')}\n"
         f"Destination map: {maps_link}\n"
         f"Expected arrival: {eta_display}\n"
-        f"Please contact them immediately."
+        f"Please check on them immediately."
     )
 
 
 async def check_overdue_safewalks():
+    # 1. Flag walks entering their grace period
+    grace_walks = flag_grace_period_safewalks()
+    for gw in grace_walks:
+        grace_mins = gw.get("grace_period_minutes") or 5
+        add_safewalk_event(
+            walk_id=gw["id"],
+            user_id=gw["user_id"],
+            event_type="arrival_unconfirmed",
+            title="Arrival Unconfirmed — Grace Period Started",
+            description=f"Expected arrival passed without safe confirmation. {grace_mins}-minute grace period active before escalation.",
+            metadata={"grace_minutes": grace_mins}
+        )
+
+    # 2. Claim walks whose grace period has expired
     overdue_walks = claim_overdue_safewalks()
     for walk in overdue_walks:
         user = get_user_by_id(walk["user_id"])
         if not user:
-            update_safewalk_status(walk["id"], walk["user_id"], "overdue_alerted")
             continue
 
         message = _build_safewalk_overdue_message(user, walk)
@@ -152,12 +168,28 @@ async def check_overdue_safewalks():
             user_id=walk["user_id"],
             incident_type="safewalk",
             threat_level="DANGER",
-            transcript=f"SafeWalk overdue for destination: {walk.get('dest_name')}",
+            transcript=f"SafeWalk overdue for destination: {walk.get('dest_name')}. Protection mode: {walk.get('mode')}.",
             lat=walk.get("dest_lat"),
             lng=walk.get("dest_lng"),
         )
-        update_safewalk_status(walk["id"], walk["user_id"], "overdue_alerted")
-        print(f"SafeWalk overdue alert processed for walk {walk['id']}: {sms_results}")
+
+        sent_count = len([r for r in sms_results if r["sms_sent"]])
+        if sent_count > 0:
+            summary = f"Alert SMS delivered to {sent_count}/{len(contacts)} contacts."
+        elif contacts:
+            summary = f"Escalation notification triggered for {len(contacts)} contacts (Twilio demo sandbox mode)."
+        else:
+            summary = "No emergency contacts configured for user."
+
+        add_safewalk_event(
+            walk_id=walk["id"],
+            user_id=walk["user_id"],
+            event_type="escalation_dispatched",
+            title="Trusted Contacts Alert Dispatched",
+            description=summary,
+            metadata={"contacts_count": len(contacts), "results": sms_results, "mode": walk.get("mode")}
+        )
+        print(f"SafeWalk escalation executed for walk {walk['id']}: {sms_results}")
 
 
 async def safewalk_monitor_loop():
@@ -236,6 +268,17 @@ class SafeWalkRequest(BaseModel):
     dest_lat: float
     dest_lng: float
     eta_minutes: int  # how many minutes until expected arrival
+    mode: Optional[str] = "relaxed"  # "relaxed" | "protected" | "high_support"
+    checkin_interval_minutes: Optional[int] = None
+    grace_period_minutes: Optional[int] = None
+
+class SafeWalkExtendRequest(BaseModel):
+    extra_minutes: int
+
+class SafeWalkHelpRequest(BaseModel):
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    message: Optional[str] = None
 
 
 @app.post("/api/register")
@@ -594,18 +637,70 @@ def get_heatmap():
 
 @app.post("/api/safewalk/start")
 def start_safewalk(req: SafeWalkRequest, user_id: int = Depends(get_current_user_id)):
-    """Start a SafeWalk session — virtual walking companion."""
-    from datetime import timedelta
-    eta = datetime.now() + timedelta(minutes=req.eta_minutes)
-    walk = create_safewalk(user_id, req.dest_name, req.dest_lat, req.dest_lng, eta.isoformat())
-    return {"safewalk": walk}
+    """Start a SafeWalk session with selected protection mode."""
+    mode = req.mode if req.mode in ("relaxed", "protected", "high_support") else "relaxed"
+
+    if mode == "relaxed":
+        checkin_interval = None
+        grace_period = req.grace_period_minutes or 10
+        next_checkin = None
+    elif mode == "protected":
+        checkin_interval = req.checkin_interval_minutes or 15
+        grace_period = req.grace_period_minutes or 5
+        next_checkin = (datetime.now() + timedelta(minutes=checkin_interval)).isoformat()
+    else:  # high_support
+        checkin_interval = req.checkin_interval_minutes or 5
+        grace_period = req.grace_period_minutes or 3
+        next_checkin = (datetime.now() + timedelta(minutes=checkin_interval)).isoformat()
+
+    eta = (datetime.now() + timedelta(minutes=req.eta_minutes)).isoformat()
+    walk = create_safewalk(
+        user_id=user_id,
+        dest_name=req.dest_name,
+        dest_lat=req.dest_lat,
+        dest_lng=req.dest_lng,
+        eta=eta,
+        mode=mode,
+        checkin_interval_minutes=checkin_interval,
+        next_checkin_due=next_checkin,
+        grace_period_minutes=grace_period
+    )
+    trail = get_safewalk_events(walk["id"], user_id)
+    contacts = get_contacts(user_id)
+    return {"safewalk": walk, "trail": trail, "contacts": contacts}
 
 
 @app.get("/api/safewalk/active")
 def get_current_safewalk(user_id: int = Depends(get_current_user_id)):
-    """Get the user's current active SafeWalk."""
+    """Get the user's current active SafeWalk with Guardian Trail and contacts."""
     walk = get_active_safewalk(user_id)
-    return {"safewalk": walk}
+    if not walk:
+        return {"safewalk": None, "trail": [], "contacts": []}
+    trail = get_safewalk_events(walk["id"], user_id)
+    contacts = get_contacts(user_id)
+    return {"safewalk": walk, "trail": trail, "contacts": contacts}
+
+
+@app.post("/api/safewalk/{walk_id}/checkin")
+def checkin_journey(walk_id: int, user_id: int = Depends(get_current_user_id)):
+    """User safety check-in during active journey."""
+    walk = checkin_safewalk(walk_id, user_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Active journey not found or unauthorized")
+    trail = get_safewalk_events(walk_id, user_id)
+    return {"safewalk": walk, "trail": trail, "message": "Safety confirmed! Check-in scheduled."}
+
+
+@app.post("/api/safewalk/{walk_id}/extend")
+def extend_journey_eta(walk_id: int, req: SafeWalkExtendRequest, user_id: int = Depends(get_current_user_id)):
+    """Extend journey ETA by specified minutes."""
+    if req.extra_minutes <= 0 or req.extra_minutes > 180:
+        raise HTTPException(status_code=400, detail="Extra minutes must be between 1 and 180")
+    walk = extend_safewalk_eta(walk_id, user_id, req.extra_minutes)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Active journey not found or unauthorized")
+    trail = get_safewalk_events(walk_id, user_id)
+    return {"safewalk": walk, "trail": trail, "message": f"ETA extended by {req.extra_minutes} minutes."}
 
 
 @app.post("/api/safewalk/{walk_id}/end")
@@ -613,8 +708,73 @@ def complete_safewalk(walk_id: int, user_id: int = Depends(get_current_user_id))
     """Mark SafeWalk as completed (reached safely)."""
     walk = end_safewalk(walk_id, user_id, "completed")
     if not walk:
-        raise HTTPException(status_code=404, detail="SafeWalk not found")
-    return {"safewalk": walk, "message": "Glad you reached safely! 🎉"}
+        raise HTTPException(status_code=404, detail="SafeWalk not found or unauthorized")
+    trail = get_safewalk_events(walk_id, user_id)
+    return {"safewalk": walk, "trail": trail, "message": "Glad you reached safely! 🎉"}
+
+
+@app.get("/api/safewalk/{walk_id}/trail")
+def get_journey_trail(walk_id: int, user_id: int = Depends(get_current_user_id)):
+    """Retrieve the Guardian Trail event log for a journey."""
+    walk = get_safewalk_by_id(walk_id, user_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Journey not found or unauthorized")
+    trail = get_safewalk_events(walk_id, user_id)
+    return {"trail": trail}
+
+
+@app.post("/api/safewalk/{walk_id}/help")
+def request_journey_help(walk_id: int, req: Optional[SafeWalkHelpRequest] = None, user_id: int = Depends(get_current_user_id)):
+    """Trigger an emergency alert from within an active journey."""
+    walk = get_safewalk_by_id(walk_id, user_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Journey not found or unauthorized")
+    user = get_user_by_id(user_id)
+    lat = (req and req.latitude) or walk.get("dest_lat")
+    lng = (req and req.longitude) or walk.get("dest_lng")
+
+    add_safewalk_event(
+        walk_id=walk_id,
+        user_id=user_id,
+        event_type="help_requested",
+        title="Emergency Help Requested",
+        description="User triggered manual SOS distress call during journey.",
+        metadata={"latitude": lat, "longitude": lng}
+    )
+
+    contacts = get_contacts(user_id)
+    message = (
+        f"🚨 EMERGENCY ALERT from {user['name']}!\n"
+        f"They requested emergency assistance during SafeWalk to {walk.get('dest_name')}.\n"
+        f"Location: https://www.google.com/maps?q={lat},{lng}\n"
+        f"Please help or contact emergency services immediately."
+    )
+    sms_results = []
+    for contact in contacts:
+        result = send_sms(contact["phone"], message)
+        sms_results.append({
+            "contact": contact["name"],
+            "phone": contact["phone"],
+            "sms_sent": result["success"],
+            "sms_error": result.get("error"),
+        })
+
+    create_incident(
+        user_id=user_id,
+        incident_type="safewalk",
+        threat_level="DANGER",
+        transcript=f"Emergency requested during SafeWalk to {walk.get('dest_name')}",
+        lat=lat,
+        lng=lng,
+    )
+
+    trail = get_safewalk_events(walk_id, user_id)
+    return {
+        "status": "alert_triggered",
+        "contacts_notified": len(contacts),
+        "sms_results": sms_results,
+        "trail": trail,
+    }
 
 
 

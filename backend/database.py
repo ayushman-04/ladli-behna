@@ -90,9 +90,32 @@ def init_db():
             dest_lat DOUBLE PRECISION,
             dest_lng DOUBLE PRECISION,
             eta TIMESTAMP,
-            status VARCHAR(20) DEFAULT 'active',
+            status VARCHAR(30) DEFAULT 'active',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+    """)
+
+    # SafeWalk extensions & migrations
+    cur.execute("""
+        ALTER TABLE safe_walks ADD COLUMN IF NOT EXISTS mode VARCHAR(30) DEFAULT 'relaxed';
+        ALTER TABLE safe_walks ADD COLUMN IF NOT EXISTS checkin_interval_minutes INTEGER DEFAULT NULL;
+        ALTER TABLE safe_walks ADD COLUMN IF NOT EXISTS next_checkin_due TIMESTAMP DEFAULT NULL;
+        ALTER TABLE safe_walks ADD COLUMN IF NOT EXISTS grace_period_minutes INTEGER DEFAULT 5;
+        ALTER TABLE safe_walks ADD COLUMN IF NOT EXISTS last_checkin_at TIMESTAMP DEFAULT NULL;
+        ALTER TABLE safe_walks ADD COLUMN IF NOT EXISTS escalation_stage VARCHAR(30) DEFAULT 'none';
+
+        CREATE TABLE IF NOT EXISTS safe_walk_events (
+            id SERIAL PRIMARY KEY,
+            walk_id INTEGER REFERENCES safe_walks(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            event_type VARCHAR(50) NOT NULL,
+            title VARCHAR(150) NOT NULL,
+            description TEXT,
+            metadata JSONB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_safe_walk_events_walk ON safe_walk_events(walk_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_safe_walks_user_status ON safe_walks(user_id, status);
     """)
 
     cur.close()
@@ -266,47 +289,269 @@ def get_heatmap_data():
 # SafeWalk Operations
 # ============================================
 
-def create_safewalk(user_id: int, dest_name: str, dest_lat: float, dest_lng: float, eta: str):
+def add_safewalk_event(walk_id: int, user_id: int, event_type: str, title: str, description: str = None, metadata: dict = None):
+    import json
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE safe_walks SET status = 'superseded' WHERE user_id = %s AND status = 'active'",
+        """
+        INSERT INTO safe_walk_events (walk_id, user_id, event_type, title, description, metadata)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (walk_id, user_id, event_type, title, description, json.dumps(metadata) if metadata is not None else None)
+    )
+    event = cur.fetchone()
+    cur.close()
+    conn.close()
+    return dict(event) if event else None
+
+
+def get_safewalk_events(walk_id: int, user_id: int = None):
+    conn = get_connection()
+    cur = conn.cursor()
+    if user_id is not None:
+        cur.execute(
+            """
+            SELECT e.* FROM safe_walk_events e
+            JOIN safe_walks w ON e.walk_id = w.id
+            WHERE e.walk_id = %s AND w.user_id = %s
+            ORDER BY e.created_at ASC
+            """,
+            (walk_id, user_id)
+        )
+    else:
+        cur.execute("SELECT * FROM safe_walk_events WHERE walk_id = %s ORDER BY created_at ASC", (walk_id,))
+    events = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [dict(e) for e in events]
+
+
+def create_safewalk(
+    user_id: int,
+    dest_name: str,
+    dest_lat: float,
+    dest_lng: float,
+    eta: str,
+    mode: str = 'relaxed',
+    checkin_interval_minutes: int = None,
+    next_checkin_due: str = None,
+    grace_period_minutes: int = 5
+):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE safe_walks SET status = 'superseded' WHERE user_id = %s AND status IN ('active', 'arrival_unconfirmed', 'overdue_processing')",
         (user_id,)
     )
     cur.execute(
-        "INSERT INTO safe_walks (user_id, dest_name, dest_lat, dest_lng, eta) VALUES (%s, %s, %s, %s, %s) RETURNING *",
-        (user_id, dest_name, dest_lat, dest_lng, eta)
+        """
+        INSERT INTO safe_walks (
+            user_id, dest_name, dest_lat, dest_lng, eta, mode,
+            checkin_interval_minutes, next_checkin_due, grace_period_minutes,
+            escalation_stage, status
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'none', 'active')
+        RETURNING *
+        """,
+        (user_id, dest_name, dest_lat, dest_lng, eta, mode, checkin_interval_minutes, next_checkin_due, grace_period_minutes)
     )
     walk = cur.fetchone()
     cur.close()
     conn.close()
-    return dict(walk)
+    walk_dict = dict(walk)
+
+    # Record initial events
+    mode_labels = {
+        'relaxed': 'Relaxed Journey',
+        'protected': 'Protected Journey',
+        'high_support': 'High-Support Journey'
+    }
+    mode_desc = mode_labels.get(mode, mode.title())
+
+    add_safewalk_event(
+        walk_id=walk_dict['id'],
+        user_id=user_id,
+        event_type='started',
+        title='Journey Started',
+        description=f"Destination set to {dest_name or 'designated location'}.",
+        metadata={'dest_name': dest_name, 'eta': eta}
+    )
+    add_safewalk_event(
+        walk_id=walk_dict['id'],
+        user_id=user_id,
+        event_type='mode_selected',
+        title=f"Protection Mode: {mode_desc}",
+        description=f"Check-in interval: {checkin_interval_minutes}m. Grace period: {grace_period_minutes}m." if checkin_interval_minutes else f"No periodic check-in required. Grace period: {grace_period_minutes}m.",
+        metadata={'mode': mode, 'checkin_interval': checkin_interval_minutes, 'grace_period': grace_period_minutes}
+    )
+
+    return walk_dict
 
 
 def get_active_safewalk(user_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM safe_walks WHERE user_id = %s AND status = 'active' ORDER BY created_at DESC LIMIT 1", (user_id,))
+    cur.execute(
+        """
+        SELECT * FROM safe_walks
+        WHERE user_id = %s AND status IN ('active', 'arrival_unconfirmed', 'overdue_processing')
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (user_id,)
+    )
     walk = cur.fetchone()
     cur.close()
     conn.close()
     return dict(walk) if walk else None
 
 
-def get_overdue_safewalks(limit: int = 50):
+def get_safewalk_by_id(walk_id: int, user_id: int = None):
+    conn = get_connection()
+    cur = conn.cursor()
+    if user_id is not None:
+        cur.execute("SELECT * FROM safe_walks WHERE id = %s AND user_id = %s", (walk_id, user_id))
+    else:
+        cur.execute("SELECT * FROM safe_walks WHERE id = %s", (walk_id,))
+    walk = cur.fetchone()
+    cur.close()
+    conn.close()
+    return dict(walk) if walk else None
+
+
+def checkin_safewalk(walk_id: int, user_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM safe_walks WHERE id = %s AND user_id = %s", (walk_id, user_id))
+    walk = cur.fetchone()
+    if not walk:
+        cur.close()
+        conn.close()
+        return None
+
+    interval = walk.get('checkin_interval_minutes')
+    if interval:
+        cur.execute(
+            """
+            UPDATE safe_walks
+            SET last_checkin_at = NOW(),
+                next_checkin_due = NOW() + (%s * INTERVAL '1 minute'),
+                status = 'active',
+                escalation_stage = 'none'
+            WHERE id = %s AND user_id = %s
+            RETURNING *
+            """,
+            (interval, walk_id, user_id)
+        )
+    else:
+        cur.execute(
+            """
+            UPDATE safe_walks
+            SET last_checkin_at = NOW(),
+                status = 'active',
+                escalation_stage = 'none'
+            WHERE id = %s AND user_id = %s
+            RETURNING *
+            """,
+            (walk_id, user_id)
+        )
+    updated = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if updated:
+        add_safewalk_event(
+            walk_id=walk_id,
+            user_id=user_id,
+            event_type='safety_confirmed',
+            title='Safety Confirmed',
+            description=f"User checked in safely. Next check-in in {interval} minutes." if interval else "User confirmed safety.",
+            metadata={'checkin_at': updated['last_checkin_at'].isoformat() if updated.get('last_checkin_at') else None}
+        )
+        return dict(updated)
+    return None
+
+
+def extend_safewalk_eta(walk_id: int, user_id: int, extra_minutes: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT *
-        FROM safe_walks
-        WHERE status = 'active'
-          AND eta IS NOT NULL
-          AND eta <= NOW()
-        ORDER BY eta ASC
-        LIMIT %s
+        UPDATE safe_walks
+        SET eta = GREATEST(eta, NOW()) + (%s * INTERVAL '1 minute'),
+            next_checkin_due = CASE
+                WHEN checkin_interval_minutes IS NOT NULL THEN
+                    GREATEST(COALESCE(next_checkin_due, NOW()), NOW() + (%s * INTERVAL '1 minute'))
+                ELSE next_checkin_due
+            END,
+            status = 'active',
+            escalation_stage = 'none'
+        WHERE id = %s AND user_id = %s
+        RETURNING *
         """,
-        (limit,)
+        (extra_minutes, extra_minutes, walk_id, user_id)
+    )
+    updated = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if updated:
+        eta_display = updated['eta'].strftime('%I:%M %p') if hasattr(updated['eta'], 'strftime') else str(updated['eta'])
+        add_safewalk_event(
+            walk_id=walk_id,
+            user_id=user_id,
+            event_type='eta_extended',
+            title=f"ETA Extended (+{extra_minutes}m)",
+            description=f"Expected arrival pushed by {extra_minutes} minutes. New arrival: {eta_display}.",
+            metadata={'extra_minutes': extra_minutes, 'new_eta': updated['eta'].isoformat() if hasattr(updated['eta'], 'isoformat') else str(updated['eta'])}
+        )
+        return dict(updated)
+    return None
+
+
+def end_safewalk(walk_id: int, user_id: int, status: str = 'completed'):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE safe_walks SET status = %s WHERE id = %s AND user_id = %s RETURNING *",
+        (status, walk_id, user_id)
+    )
+    walk = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if walk:
+        add_safewalk_event(
+            walk_id=walk_id,
+            user_id=user_id,
+            event_type='completed',
+            title='Journey Completed',
+            description='User marked journey as completed safely.',
+            metadata={'final_status': status}
+        )
+        return dict(walk)
+    return None
+
+
+def flag_grace_period_safewalks():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE safe_walks
+        SET status = 'arrival_unconfirmed',
+            escalation_stage = 'grace_active'
+        WHERE status = 'active'
+          AND escalation_stage = 'none'
+          AND (
+              (eta IS NOT NULL AND eta <= NOW())
+              OR
+              (checkin_interval_minutes IS NOT NULL AND next_checkin_due IS NOT NULL AND next_checkin_due <= NOW())
+          )
+        RETURNING *
+        """
     )
     walks = cur.fetchall()
     cur.close()
@@ -320,13 +565,17 @@ def claim_overdue_safewalks(limit: int = 50):
     cur.execute(
         """
         UPDATE safe_walks
-        SET status = 'overdue_processing'
+        SET escalation_stage = 'unconfirmed_alerted'
         WHERE id IN (
             SELECT id
             FROM safe_walks
-            WHERE status = 'active'
-              AND eta IS NOT NULL
-              AND eta <= NOW()
+            WHERE status = 'arrival_unconfirmed'
+              AND escalation_stage = 'grace_active'
+              AND (
+                  (eta IS NOT NULL AND eta + (COALESCE(grace_period_minutes, 5) * INTERVAL '1 minute') <= NOW())
+                  OR
+                  (checkin_interval_minutes IS NOT NULL AND next_checkin_due IS NOT NULL AND next_checkin_due + (COALESCE(grace_period_minutes, 5) * INTERVAL '1 minute') <= NOW())
+              )
             ORDER BY eta ASC
             LIMIT %s
             FOR UPDATE SKIP LOCKED
@@ -352,7 +601,3 @@ def update_safewalk_status(walk_id: int, user_id: int, status: str):
     cur.close()
     conn.close()
     return dict(walk) if walk else None
-
-
-def end_safewalk(walk_id: int, user_id: int, status: str = "completed"):
-    return update_safewalk_status(walk_id, user_id, status)

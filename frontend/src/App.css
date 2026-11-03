@@ -1641,3 +1641,268 @@ h4 { font-size: 1.05rem; }
 .hazard-list .police-item {
   border-color: rgba(239, 68, 68, 0.22);
 }
+
+
+/* ============================================
+   SMART JOURNEY PROTECTION & GUARDIAN TRAIL
+   ============================================ */
+
+/* Journey Mode Selection Cards */
+.journey-modes-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.journey-mode-card {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.journey-mode-card:hover {
+  border-color: var(--border-hover);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.journey-mode-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-10);
+  box-shadow: 0 0 16px rgba(236, 168, 214, 0.08);
+}
+
+.journey-mode-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.journey-mode-badge {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  padding: 2px 7px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.journey-mode-badge.relaxed {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--emerald);
+  border: 1px solid var(--emerald-border);
+}
+
+.journey-mode-badge.protected {
+  background: var(--accent-10);
+  color: var(--accent);
+  border: 1px solid var(--accent-30);
+}
+
+.journey-mode-badge.high_support {
+  background: var(--red-10);
+  color: var(--red-light);
+  border: 1px solid var(--red-border);
+}
+
+.journey-mode-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--foreground);
+}
+
+.journey-mode-desc {
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+  line-height: 1.45;
+}
+
+.mode-config-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.mode-config-chip {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 3px 8px;
+  border-radius: var(--radius);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+}
+
+/* Status Badges */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+.status-pill.active {
+  background: var(--emerald-10);
+  color: var(--emerald);
+  border: 1px solid var(--emerald-border);
+}
+
+.status-pill.due {
+  background: var(--amber-10);
+  color: var(--amber);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  animation: pulseAmber 2s infinite;
+}
+
+.status-pill.grace,
+.status-pill.unconfirmed {
+  background: var(--red-10);
+  color: var(--red-light);
+  border: 1px solid var(--red-border);
+  animation: pulseRed 1.6s infinite;
+}
+
+@keyframes pulseAmber {
+  0%, 100% { opacity: 0.85; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.03); }
+}
+
+@keyframes pulseRed {
+  0%, 100% { opacity: 0.88; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.04); }
+}
+
+/* Quick Action Buttons Row */
+.quick-extend-group {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.quick-btn {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.quick-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-hover);
+}
+
+/* Guardian Trail Timeline */
+.guardian-trail-card {
+  margin-top: 24px;
+  padding: 20px 18px;
+  border-radius: var(--radius);
+  background: var(--card);
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.trail-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  position: relative;
+  margin-top: 16px;
+  padding-left: 20px;
+}
+
+.trail-timeline::before {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 6px;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.trail-entry {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.trail-entry-dot {
+  position: absolute;
+  left: -20px;
+  top: 4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--background);
+  border: 2px solid var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+
+.trail-entry-dot.emerald { border-color: var(--emerald); }
+.trail-entry-dot.amber { border-color: var(--amber); }
+.trail-entry-dot.red { border-color: var(--red-light); }
+
+.trail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.trail-title {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.trail-time {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--muted-foreground);
+  letter-spacing: 0.04em;
+}
+
+.trail-desc {
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  line-height: 1.4;
+}
+
+.trail-tag {
+  display: inline-block;
+  align-self: flex-start;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+}
