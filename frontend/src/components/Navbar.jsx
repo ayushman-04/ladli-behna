@@ -34,6 +34,12 @@ const Icons = {
       <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
     </svg>
   ),
+  User: () => (
+    <svg viewBox="0 0 24 24">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  ),
 }
 
 export default function Navbar() {
@@ -43,6 +49,7 @@ export default function Navbar() {
     { to: '/map',       label: 'Map',      Icon: Icons.Map    },
     { to: '/contacts',  label: 'Contacts', Icon: Icons.Users  },
     { to: '/hub',       label: 'Hub',      Icon: Icons.Book   },
+    { to: '/profile',   label: 'Profile',  Icon: Icons.User   },
   ]
 
   return (

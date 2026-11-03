@@ -35,6 +35,12 @@ const LogoutIcon = () => (
     <line x1="21" y1="12" x2="9" y2="12" />
   </svg>
 )
+const UserIcon = () => (
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+    <circle cx="12" cy="7" r="4" />
+  </svg>
+)
 
 /* ── Scroll reveal hook ─────────────────────────────── */
 function useScrollReveal() {
@@ -116,16 +122,32 @@ export default function Dashboard() {
               <p className="greeting eyebrow" style={{ marginBottom: '6px' }}>
                 {getGreeting()}
               </p>
-              <h1>{user?.name?.split(' ')[0]}</h1>
+              <h1
+                onClick={() => navigate('/profile')}
+                style={{ cursor: 'pointer' }}
+                title="View Profile & Settings"
+              >
+                {user?.name?.split(' ')[0]}
+              </h1>
             </div>
-            <button
-              className="btn btn-ghost btn-sm btn-icon"
-              onClick={logout}
-              title="Log out"
-              aria-label="Log out"
-            >
-              <LogoutIcon />
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                className="btn btn-ghost btn-sm btn-icon"
+                onClick={() => navigate('/profile')}
+                title="Profile & Safety Preferences"
+                aria-label="Profile and Safety Preferences"
+              >
+                <UserIcon />
+              </button>
+              <button
+                className="btn btn-ghost btn-sm btn-icon"
+                onClick={logout}
+                title="Log out"
+                aria-label="Log out"
+              >
+                <LogoutIcon />
+              </button>
+            </div>
           </div>
 
           <div className={`status-badge ${shieldActive ? 'active-status' : 'safe'}`}>

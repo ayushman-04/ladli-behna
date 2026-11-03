@@ -142,16 +142,18 @@ def update_user(user_id: int, name: str = None, phone: str = None, safe_word: st
     cur = conn.cursor()
     updates = []
     values = []
-    if name:
+    if name is not None:
         updates.append("name = %s")
         values.append(name)
-    if phone:
+    if phone is not None:
         updates.append("phone = %s")
         values.append(phone)
-    if safe_word:
+    if safe_word is not None:
         updates.append("safe_word = %s")
         values.append(safe_word)
     if not updates:
+        cur.close()
+        conn.close()
         return get_user_by_id(user_id)
     values.append(user_id)
     cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = %s RETURNING id, name, email, phone, safe_word, created_at", values)

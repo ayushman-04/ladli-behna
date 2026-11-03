@@ -324,8 +324,31 @@ def get_profile(user_id: int = Depends(get_current_user_id)):
 
 @app.put("/api/me")
 def update_profile(req: UpdateProfileRequest, user_id: int = Depends(get_current_user_id)):
-    """Update current user's profile."""
-    user = update_user(user_id, req.name, req.phone, req.safe_word)
+    """Update current user's profile with validation."""
+    name = req.name
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Name cannot be empty.")
+
+    phone = req.phone
+    if phone is not None:
+        phone = phone.strip()
+        if phone:
+            try:
+                phone = normalize_indian_mobile(phone)
+            except ValueError as ve:
+                raise HTTPException(status_code=422, detail=str(ve))
+        else:
+            phone = None
+
+    safe_word = req.safe_word
+    if safe_word is not None:
+        safe_word = safe_word.strip() or None
+
+    user = update_user(user_id, name, phone, safe_word)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
     return {"user": user}
 
 
