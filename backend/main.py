@@ -10,9 +10,9 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import os
-import sys
-from pathlib import Path
+import re
 import uuid
+from pathlib import Path
 
 # Ensure backend directory is in sys.path so modules resolve whether run from root or backend/
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -204,10 +204,42 @@ class UpdateProfileRequest(BaseModel):
     phone: Optional[str] = None
     safe_word: Optional[str] = None
 
+def normalize_indian_mobile(phone_input: str) -> str:
+    """
+    Validate and normalize Indian mobile numbers to E.164 (+91XXXXXXXXXX).
+    Accepts:
+      - 10-digit number starting with 6, 7, 8, or 9
+      - +91 / 91 / 0 prefix with 10-digit number starting with 6-9
+      - Optional spaces, hyphens, and parentheses
+    Raises ValueError with a user-friendly error message if invalid.
+    """
+    if not phone_input or not isinstance(phone_input, str):
+        raise ValueError("Phone number is required.")
+
+    cleaned = re.sub(r"[\s\-()]", "", phone_input.strip())
+    if re.fullmatch(r"\+91[6-9]\d{9}", cleaned):
+        return cleaned
+    if re.fullmatch(r"91[6-9]\d{9}", cleaned):
+        return f"+{cleaned}"
+    if re.fullmatch(r"0[6-9]\d{9}", cleaned):
+        return f"+91{cleaned[1:]}"
+    if re.fullmatch(r"[6-9]\d{9}", cleaned):
+        return f"+91{cleaned}"
+
+    digits_only = re.sub(r"\D", "", cleaned)
+    if not digits_only:
+        raise ValueError("Phone number is required.")
+    if len(digits_only) < 10:
+        raise ValueError("Phone number is too short. Please enter a valid 10-digit Indian mobile number.")
+    if len(digits_only) == 10 and not digits_only.startswith(("6", "7", "8", "9")):
+        raise ValueError("Indian mobile numbers must start with 6, 7, 8, or 9.")
+
+    raise ValueError("Invalid phone number. Please enter a valid 10-digit Indian mobile number (e.g. 9876543210 or +91 9876543210).")
+
 class ContactRequest(BaseModel):
     name: str
     phone: str
-    relationship: Optional[str] = None
+    relationship: str
 
 class TranscriptRequest(BaseModel):
     transcript: str
@@ -215,8 +247,8 @@ class TranscriptRequest(BaseModel):
     longitude: Optional[float] = None
 
 class EmergencyRequest(BaseModel):
-    latitude: float
-    longitude: float
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     type: str = "manual"  # manual, audio, shake
     transcript: Optional[str] = None
     notify_police: bool = False  # Optional: also SMS police helpline (user's choice)
@@ -306,8 +338,21 @@ def list_contacts(user_id: int = Depends(get_current_user_id)):
 
 @app.post("/api/contacts")
 def create_contact(req: ContactRequest, user_id: int = Depends(get_current_user_id)):
-    """Add a new emergency contact."""
-    contact = add_contact(user_id, req.name, req.phone, req.relationship)
+    """Add a new emergency contact with validation for Indian mobile numbers and mandatory relationship."""
+    name = (req.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Contact name is required.")
+
+    relationship = (req.relationship or "").strip()
+    if not relationship:
+        raise HTTPException(status_code=422, detail="Relationship is mandatory.")
+
+    try:
+        normalized_phone = normalize_indian_mobile(req.phone or "")
+    except ValueError as ve:
+        raise HTTPException(status_code=422, detail=str(ve))
+
+    contact = add_contact(user_id, name, normalized_phone, relationship)
     return {"contact": contact}
 
 
@@ -416,7 +461,11 @@ def trigger_emergency(req: EmergencyRequest, user_id: int = Depends(get_current_
 
     contacts = get_contacts(user_id)
     user = get_user_by_id(user_id)
-    maps_link = f"https://www.google.com/maps?q={req.latitude},{req.longitude}"
+    maps_link = (
+        f"https://www.google.com/maps?q={req.latitude},{req.longitude}"
+        if req.latitude is not None and req.longitude is not None
+        else None
+    )
     sos_message = notification.get("message", "")
     sms_results = notification.get("sms_results", [])
 
@@ -426,11 +475,12 @@ def trigger_emergency(req: EmergencyRequest, user_id: int = Depends(get_current_
     police_sms_result = None
     if req.notify_police:
         # India women helpline as example; adapt as needed
+        location_line = f"Location: {maps_link}" if maps_link else "Location: Unavailable"
         police_msg = (
             f"\U0001f6a8 POLICE ASSISTANCE NEEDED\n"
             f"Name: {user['name']}\n"
             f"Phone: {user.get('phone', 'N/A')}\n"
-            f"Location: {maps_link}\n"
+            f"{location_line}\n"
             f"Time: {datetime.now().strftime('%I:%M %p, %b %d %Y')}"
         )
         # NOTE: Real emergency numbers (100, 911) don't accept SMS.
