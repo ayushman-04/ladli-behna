@@ -166,6 +166,7 @@ function App() {
               <Route path="/contacts" element={<ProtectedRoute><Contacts /></ProtectedRoute>} />
               <Route path="/safewalk" element={<ProtectedRoute><SafeWalk /></ProtectedRoute>} />
               <Route path="/hub" element={<ProtectedRoute><Hub /></ProtectedRoute>} />
+              <Route path="*" element={<Navigate to={user ? "/dashboard" : "/"} replace />} />
             </Routes>
 
             {showNavbar && <Navbar />}
