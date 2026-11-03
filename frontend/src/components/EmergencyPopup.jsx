@@ -253,7 +253,7 @@ export default function EmergencyPopup({ type, onOk }) {
 
       // Normalize emergency numbers to always prioritize India 112
       const emergencyNumbers = (data.emergency_numbers && data.emergency_numbers.length > 0)
-        ? data.emergency_numbers.filter(n => n.phone !== '911')
+        ? data.emergency_numbers
         : INDIA_EMERGENCY_NUMBERS
 
       setEmergencyData({
@@ -272,9 +272,9 @@ export default function EmergencyPopup({ type, onOk }) {
       if (totalCount === 0) {
         showToast('🚨 SOS logged on server! Add contacts to enable automated alerts.', 'error')
       } else if (acceptedCount === 0) {
-        showToast('🚨 Emergency logged! SMS service unconfigured — use WhatsApp/Call below.', 'error')
+        showToast('🚨 SOS logged! SMS service unconfigured — use manual WhatsApp / Call below.', 'error')
       } else {
-        showToast(`🚨 SOS submitted! Dispatch provider accepted request for ${acceptedCount}/${totalCount} contacts.`, 'error')
+        showToast(`🚨 SOS logged! Dispatch provider accepted request for ${acceptedCount}/${totalCount} contacts (recipient delivery unconfirmed).`, 'error')
       }
 
       // Vibrate if supported
@@ -320,7 +320,7 @@ export default function EmergencyPopup({ type, onOk }) {
         isOfflineFallback: true,
       })
 
-      showToast('⚠️ Server unreachable. Emergency alert could not be sent remotely — call 112 or contacts below directly!', 'error')
+      showToast('⚠️ Backend unavailable! SOS was NOT dispatched remotely. Please dial 112 or call contacts below directly!', 'error')
 
       if (typeof navigator !== 'undefined' && navigator.vibrate) {
         navigator.vibrate([400, 200, 400])
@@ -400,19 +400,30 @@ export default function EmergencyPopup({ type, onOk }) {
                 background: 'rgba(239, 68, 68, 0.15)',
                 border: '1px solid rgba(239, 68, 68, 0.4)',
                 borderRadius: '8px',
-                padding: '8px 12px',
+                padding: '10px 14px',
                 fontSize: '0.78rem',
                 color: '#fca5a5',
                 textAlign: 'left',
                 marginBottom: '10px',
                 lineHeight: '1.4'
               }}>
-                ⚠️ <strong>Offline Mode:</strong> Server is unreachable. Alert could not be dispatched remotely. Please call emergency services or contacts directly below.
+                🚨 <strong>SOS NOT Dispatched Remotely (Backend Unreachable):</strong><br />
+                The server could not be reached. Remote automated alerts were not sent. You must dial emergency services (112) or call your contacts directly below.
               </div>
             ) : (
-              <p style={{ color: 'var(--muted-foreground, #94a3b8)', marginBottom: '8px', fontSize: '0.84rem' }}>
-                Emergency incident recorded. Dispatch status and direct lines are displayed below.
-              </p>
+              <div style={{
+                background: 'rgba(16, 185, 129, 0.12)',
+                border: '1px solid rgba(16, 185, 129, 0.35)',
+                borderRadius: '8px',
+                padding: '8px 12px',
+                fontSize: '0.78rem',
+                color: '#6ee7b7',
+                textAlign: 'left',
+                marginBottom: '10px',
+                lineHeight: '1.4'
+              }}>
+                ✅ <strong>SOS Incident #{emergencyData.incident?.id || 'Active'} Logged on Server:</strong> Dispatch requests were submitted. Dispatch status and direct lines are shown below.
+              </div>
             )}
 
             {/* GPS Status Indicator */}
@@ -468,9 +479,12 @@ export default function EmergencyPopup({ type, onOk }) {
           {/* Personal Trusted Contacts */}
           {emergencyData.contacts?.length > 0 && (
             <div style={{ marginBottom: '18px' }}>
-              <span className="eyebrow" style={{ display: 'block', marginBottom: '8px', textAlign: 'left', fontSize: '0.72rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <span className="eyebrow" style={{ display: 'block', marginBottom: '4px', textAlign: 'left', fontSize: '0.72rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Your Trusted Contacts
               </span>
+              <p style={{ fontSize: '0.72rem', color: '#94a3b8', margin: '0 0 10px 0', textAlign: 'left', lineHeight: '1.3' }}>
+                Note: WhatsApp alerts require manual sending by clicking the button below. Provider SMS acceptance does not confirm recipient delivery.
+              </p>
               {emergencyData.contacts.map((contact, i) => {
                 const sms = smsMap[contact.phone]
 
@@ -483,13 +497,13 @@ export default function EmergencyPopup({ type, onOk }) {
                   statusColor = '#f87171'
                 } else if (sms) {
                   if (sms.sms_sent) {
-                    statusText = 'Provider accepted request (delivery in progress)'
+                    statusText = 'SMS accepted by provider (transit in progress, recipient delivery unconfirmed)'
                     statusColor = '#38bdf8'
                   } else if (sms.sms_error && sms.sms_error.toLowerCase().includes('not configured')) {
-                    statusText = 'SMS service in test/demo mode (use direct call below)'
+                    statusText = 'SMS service unconfigured (test mode) — send manual WhatsApp / Call below'
                     statusColor = '#fbbf24'
                   } else {
-                    statusText = `Dispatch failed: ${sms.sms_error || 'Delivery unconfirmed'}`
+                    statusText = `SMS dispatch failed: ${sms.sms_error || 'Dispatch error'} — manual follow-up required`
                     statusColor = '#f87171'
                   }
                 }
@@ -503,10 +517,31 @@ export default function EmergencyPopup({ type, onOk }) {
                         {statusText}
                       </div>
                     </div>
-                    <div className="contact-actions">
-                      <a href={contact.tel_link} className="call-btn" title="Call directly" aria-label={`Call ${contact.name}`}>📞</a>
+                    <div className="contact-actions" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                      <a href={contact.tel_link} className="call-btn" title="Call directly" aria-label={`Call ${contact.name}`}>📞 Call</a>
                       {contact.whatsapp_link && (
-                        <a href={contact.whatsapp_link} target="_blank" rel="noopener noreferrer" className="whatsapp-btn" title="Send WhatsApp Message" aria-label={`WhatsApp ${contact.name}`}>💬</a>
+                        <a
+                          href={contact.whatsapp_link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="whatsapp-btn"
+                          title="Open WhatsApp to send message manually"
+                          aria-label={`Send WhatsApp manually to ${contact.name}`}
+                          style={{
+                            fontSize: '0.72rem',
+                            padding: '6px 10px',
+                            textDecoration: 'none',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            background: 'rgba(37, 211, 102, 0.15)',
+                            border: '1px solid rgba(37, 211, 102, 0.4)',
+                            color: '#4ade80',
+                            borderRadius: '6px'
+                          }}
+                        >
+                          💬 WhatsApp (Manual)
+                        </a>
                       )}
                     </div>
                   </div>

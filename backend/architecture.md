@@ -283,9 +283,9 @@ POST /api/register  or  POST /api/login
   "sms_results": [{ "contact", "phone", "sms_sent": true, "sms_error": null }],
   "police_notified": null,
   "emergency_numbers": [
-    { "name": "Police (India)", "phone": "100", "tel_link": "tel:100" },
-    { "name": "Women Helpline", "phone": "1091", "tel_link": "tel:1091" },
-    { "name": "Emergency (US)", "phone": "911", "tel_link": "tel:911" }
+    { "name": "National Emergency (ERSS)", "phone": "112", "tel_link": "tel:112" },
+    { "name": "Women Helpline (All India)", "phone": "1091", "tel_link": "tel:1091" },
+    { "name": "Police Control Room", "phone": "100", "tel_link": "tel:100" }
   ],
   "maps_link": "https://www.google.com/maps?q=lat,lng"
 }

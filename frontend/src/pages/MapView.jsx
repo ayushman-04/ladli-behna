@@ -72,6 +72,12 @@ export default function MapView() {
 
   // Map entities
   const [policeStations, setPoliceStations] = useState([])
+  const [policeUnavailableMessage, setPoliceUnavailableMessage] = useState('')
+  const [verifiedHelplines, setVerifiedHelplines] = useState([
+    { name: 'National Emergency (ERSS)', phone: '112', tel_link: 'tel:112' },
+    { name: 'Women Helpline (All India)', phone: '1091', tel_link: 'tel:1091' },
+    { name: 'Police Control Room', phone: '100', tel_link: 'tel:100' },
+  ])
   const [safetyReports, setSafetyReports] = useState([])
   const [loading, setLoading] = useState(true)
   const [activeFilter, setActiveFilter] = useState('all') // 'all' | 'police' | 'reports'
@@ -145,9 +151,20 @@ export default function MapView() {
         method: 'POST',
         body: JSON.stringify({ latitude: lat, longitude: lng }),
       })
-      setPoliceStations(data.stations || [])
+      const stations = data.stations || []
+      setPoliceStations(stations)
+      if (stations.length === 0) {
+        setPoliceUnavailableMessage(data.message || 'Nearby police station data is temporarily unavailable from OpenStreetMap.')
+      } else {
+        setPoliceUnavailableMessage('')
+      }
+      if (data.emergency_numbers && data.emergency_numbers.length > 0) {
+        setVerifiedHelplines(data.emergency_numbers)
+      }
     } catch (err) {
       console.warn('Police stations query notice:', err)
+      setPoliceStations([])
+      setPoliceUnavailableMessage('Nearby police station data is temporarily unavailable from OpenStreetMap.')
     }
   }
 
@@ -424,38 +441,70 @@ export default function MapView() {
           </MapContainer>
         </div>
 
-        {/* Police Station Directory */}
-        {policeStations.length > 0 && (
+        {/* Police Station Directory & Verified Emergency Helplines Fallback */}
+        {(activeFilter === 'all' || activeFilter === 'police') && (
           <div className="police-list" style={{ marginTop: '20px' }}>
             <span className="eyebrow" style={{ display: 'block', marginBottom: '10px' }}>
               Nearby Safe Havens & Police Stations ({policeStations.length})
             </span>
-            {policeStations.slice(0, 5).map((station, i) => (
-              <div key={i} className="police-item">
-                <span className="police-icon" aria-hidden="true">🏛️</span>
-                <div style={{ flex: 1 }}>
-                  <div className="police-name">{station.name}</div>
-                  {station.phone ? (
-                    <a href={`tel:${station.phone}`} style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--accent)' }}>
-                      {station.phone}
-                    </a>
-                  ) : (
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--muted-foreground)' }}>
-                      Helpline: 100 / 112
-                    </span>
-                  )}
+            {policeStations.length > 0 ? (
+              policeStations.slice(0, 5).map((station, i) => (
+                <div key={i} className="police-item">
+                  <span className="police-icon" aria-hidden="true">🏛️</span>
+                  <div style={{ flex: 1 }}>
+                    <div className="police-name">{station.name}</div>
+                    {station.phone ? (
+                      <a href={`tel:${station.phone}`} style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--accent)' }}>
+                        {station.phone}
+                      </a>
+                    ) : (
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--muted-foreground)' }}>
+                        Helpline: Dial 112 / 100
+                      </span>
+                    )}
+                  </div>
+                  <a
+                    href={`https://www.google.com/maps/dir/?api=1&destination=${station.latitude},${station.longitude}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-outline btn-sm"
+                    aria-label={`Directions to ${station.name}`}
+                  >
+                    Directions
+                  </a>
                 </div>
-                <a
-                  href={`https://www.google.com/maps/dir/?api=1&destination=${station.latitude},${station.longitude}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn btn-outline btn-sm"
-                  aria-label={`Directions to ${station.name}`}
-                >
-                  Directions
-                </a>
+              ))
+            ) : (
+              <div className="glass-card-static" style={{ padding: '14px 16px', borderLeft: '3px solid var(--amber)', background: 'rgba(245,158,11,0.06)', borderRadius: '8px' }}>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '0.76rem', color: 'var(--amber)', fontWeight: 600, marginBottom: '6px' }}>
+                  ℹ️ Nearby Police Station Data Unavailable
+                </p>
+                <p style={{ fontSize: '0.76rem', color: 'var(--foreground)', opacity: 0.85, lineHeight: 1.4, margin: '0 0 12px 0' }}>
+                  {policeUnavailableMessage || 'Nearby police station mapping data is temporarily unavailable from OpenStreetMap. Fictional coordinates are never displayed. For immediate assistance, dial the verified emergency helplines below.'}
+                </p>
+                
+                <span className="eyebrow" style={{ display: 'block', marginBottom: '8px', fontSize: '0.7rem' }}>
+                  Verified Emergency Contact Numbers (India)
+                </span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {verifiedHelplines.map((helpline, idx) => (
+                    <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div>
+                        <strong style={{ fontSize: '0.8rem', display: 'block', color: helpline.phone === '112' ? 'var(--red-light)' : 'var(--foreground)' }}>
+                          {helpline.phone === '112' ? '⭐ ' : ''}{helpline.name}
+                        </strong>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--muted-foreground)' }}>
+                          Dial: {helpline.phone}
+                        </span>
+                      </div>
+                      <a href={helpline.tel_link || `tel:${helpline.phone}`} className={`btn btn-sm ${helpline.phone === '112' ? 'btn-danger' : 'btn-outline'}`} style={{ padding: '4px 12px', fontSize: '0.72rem' }}>
+                        📞 Call {helpline.phone}
+                      </a>
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
+            )}
           </div>
         )}
 

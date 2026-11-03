@@ -474,21 +474,12 @@ else None
     # -------------------------------------------------------
     police_sms_result = None
     if req.notify_police:
-<<<<<<< HEAD
         location_line = f"Location: {maps_link}\n" if maps_link else "Location: unavailable\n"
-=======
-        # India women helpline as example; adapt as needed
-        location_line = f"Location: {maps_link}" if maps_link else "Location: Unavailable"
->>>>>>> origin/integration
         police_msg = (
             f"\U0001f6a8 POLICE ASSISTANCE NEEDED\n"
             f"Name: {user['name']}\n"
             f"Phone: {user.get('phone', 'N/A')}\n"
-<<<<<<< HEAD
             f"{location_line}"
-=======
-            f"{location_line}\n"
->>>>>>> origin/integration
             f"Time: {datetime.now().strftime('%I:%M %p, %b %d %Y')}"
         )
         # NOTE: Real emergency numbers (100, 112) don't accept SMS.
@@ -545,6 +536,11 @@ def resolve_emergency(incident_id: int, user_id: int = Depends(get_current_user_
 @app.post("/api/location/police")
 def find_nearest_police(req: LocationUpdate):
     """Find nearest police stations using OpenStreetMap Overpass API."""
+    emergency_numbers = [
+        {"name": "National Emergency (ERSS)", "phone": "112", "tel_link": "tel:112"},
+        {"name": "Women Helpline (All India)", "phone": "1091", "tel_link": "tel:1091"},
+        {"name": "Police Control Room", "phone": "100", "tel_link": "tel:100"},
+    ]
     try:
         # Overpass API query for police stations within 5km radius
         overpass_url = "https://overpass-api.de/api/interpreter"
@@ -557,8 +553,6 @@ def find_nearest_police(req: LocationUpdate):
         out center body;
         """
 
-        # FIX: Overpass API requires a User-Agent header or it may reject the request.
-        # Without this header, many Overpass mirrors return 429 or silently drop the query.
         headers = {
             "User-Agent": "ShieldHer-SafetyApp/1.0 (women-safety-hackathon)"
         }
@@ -586,54 +580,27 @@ def find_nearest_police(req: LocationUpdate):
                 })
 
         if not stations:
-            print(f"ℹ️ No police stations returned from Overpass, providing regional safety stations for {req.latitude},{req.longitude}")
-            stations = [
-                {
-                    "name": "District Police Station & Women Help Desk",
-                    "latitude": req.latitude + 0.005,
-                    "longitude": req.longitude + 0.004,
-                    "phone": "100 / 112",
-                },
-                {
-                    "name": "Women Special Cell / PCR Patrol Unit",
-                    "latitude": req.latitude - 0.004,
-                    "longitude": req.longitude + 0.006,
-                    "phone": "1091",
-                },
-                {
-                    "name": "City Police Control Room & Transit Post",
-                    "latitude": req.latitude + 0.003,
-                    "longitude": req.longitude - 0.005,
-                    "phone": "112",
-                },
-            ]
+            return {
+                "stations": [],
+                "available": False,
+                "message": "Nearby police station data is temporarily unavailable from OpenStreetMap.",
+                "emergency_numbers": emergency_numbers,
+            }
 
-        return {"stations": stations[:10]}  # Return top 10 nearest
+        return {
+            "stations": stations[:10],
+            "available": True,
+            "emergency_numbers": emergency_numbers,
+        }
 
     except Exception as e:
-        print(f"⚠️ Overpass API notice (emergency fallback activated): {e}")
+        print(f"⚠️ Overpass API notice (stations unavailable): {e}")
         return {
-            "stations": [
-                {
-                    "name": "District Police Station & Women Help Desk",
-                    "latitude": req.latitude + 0.005,
-                    "longitude": req.longitude + 0.004,
-                    "phone": "100 / 112",
-                },
-                {
-                    "name": "Women Special Cell / PCR Patrol Unit",
-                    "latitude": req.latitude - 0.004,
-                    "longitude": req.longitude + 0.006,
-                    "phone": "1091",
-                },
-                {
-                    "name": "City Police Control Room & Transit Post",
-                    "latitude": req.latitude + 0.003,
-                    "longitude": req.longitude - 0.005,
-                    "phone": "112",
-                },
-            ],
-            "note": "Regional emergency posts active (Overpass standby)",
+            "stations": [],
+            "available": False,
+            "message": "Nearby police station data is temporarily unavailable from OpenStreetMap.",
+            "emergency_numbers": emergency_numbers,
+            "error": str(e),
         }
 
 
