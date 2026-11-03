@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext } from 'react'
+import { useState, useEffect, useCallback, createContext, useContext } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import './App.css'
 
@@ -11,6 +11,7 @@ import MapView from './pages/MapView'
 import Contacts from './pages/Contacts'
 import SafeWalk from './pages/SafeWalk'
 import Hub from './pages/Hub'
+import Profile from './pages/Profile'
 
 // ============================================
 // API Helper
@@ -111,11 +112,19 @@ function App() {
     setLoading(false)
   }, [])
 
+  // Sanitize user object to never store sensitive safety credentials (e.g. safe_word) in localStorage
+  const sanitizeUserForStorage = (userData) => {
+    if (!userData) return null
+    const { safe_word, ...sanitized } = userData
+    return sanitized
+  }
+
   // Login handler
   const login = (token, userData) => {
     localStorage.setItem('shieldher_token', token)
-    localStorage.setItem('shieldher_user', JSON.stringify(userData))
-    setUser(userData)
+    const sanitized = sanitizeUserForStorage(userData)
+    localStorage.setItem('shieldher_user', JSON.stringify(sanitized))
+    setUser(sanitized)
   }
 
   // Logout handler
@@ -124,6 +133,13 @@ function App() {
     localStorage.removeItem('shieldher_user')
     setUser(null)
   }
+
+  // Update user handler (e.g. from profile updates)
+  const updateAuthUser = useCallback((userData) => {
+    const sanitized = sanitizeUserForStorage(userData)
+    localStorage.setItem('shieldher_user', JSON.stringify(sanitized))
+    setUser(sanitized)
+  }, [])
 
   // Toast handler
   const showToast = (message, type = 'success') => {
@@ -154,7 +170,7 @@ function App() {
   const showNavbar = user && location.pathname !== '/'
 
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
+    <AuthContext.Provider value={{ user, login, logout, updateAuthUser }}>
       <ToastContext.Provider value={{ showToast }}>
         <EmergencyContext.Provider value={{ emergency, triggerEmergency, cancelEmergency }}>
           <div className="app-container">
@@ -166,6 +182,8 @@ function App() {
               <Route path="/contacts" element={<ProtectedRoute><Contacts /></ProtectedRoute>} />
               <Route path="/safewalk" element={<ProtectedRoute><SafeWalk /></ProtectedRoute>} />
               <Route path="/hub" element={<ProtectedRoute><Hub /></ProtectedRoute>} />
+              <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+              <Route path="*" element={<Navigate to={user ? "/dashboard" : "/"} replace />} />
             </Routes>
 
             {showNavbar && <Navbar />}
