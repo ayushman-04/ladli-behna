@@ -75,7 +75,7 @@ def send_sms(to_phone: str, message: str) -> dict:
         return {"success": False, "error": str(e)}
 
 from database import (
-    init_db, create_user, get_user_by_email, get_user_by_id, update_user,
+    init_db, create_user, get_user_by_email, get_user_by_id, update_user, DB_UNSET,
     add_contact, get_contacts, delete_contact,
     create_incident, get_incidents, resolve_incident,
     create_report, get_heatmap_data,
@@ -307,8 +307,7 @@ def login(req: LoginRequest):
             "id": user["id"],
             "name": user["name"],
             "email": user["email"],
-            "phone": user.get("phone"),
-            "safe_word": user.get("safe_word")
+            "phone": user.get("phone")
         }
     }
 
@@ -325,28 +324,32 @@ def get_profile(user_id: int = Depends(get_current_user_id)):
 @app.put("/api/me")
 def update_profile(req: UpdateProfileRequest, user_id: int = Depends(get_current_user_id)):
     """Update current user's profile with validation."""
-    name = req.name
-    if name is not None:
-        name = name.strip()
-        if not name:
-            raise HTTPException(status_code=422, detail="Name cannot be empty.")
+    fields_set = req.model_fields_set
 
-    phone = req.phone
-    if phone is not None:
-        phone = phone.strip()
-        if phone:
+    name = DB_UNSET
+    if "name" in fields_set:
+        if req.name is None or not req.name.strip():
+            raise HTTPException(status_code=422, detail="Name cannot be empty.")
+        name = req.name.strip()
+
+    phone = DB_UNSET
+    if "phone" in fields_set:
+        if req.phone is None or not req.phone.strip():
+            phone = None  # Intentionally clear phone to NULL in database
+        else:
             try:
-                phone = normalize_indian_mobile(phone)
+                phone = normalize_indian_mobile(req.phone.strip())
             except ValueError as ve:
                 raise HTTPException(status_code=422, detail=str(ve))
+
+    safe_word = DB_UNSET
+    if "safe_word" in fields_set:
+        if req.safe_word is None or not req.safe_word.strip():
+            safe_word = None  # Intentionally clear safe_word to NULL in database
         else:
-            phone = None
+            safe_word = req.safe_word.strip()
 
-    safe_word = req.safe_word
-    if safe_word is not None:
-        safe_word = safe_word.strip() or None
-
-    user = update_user(user_id, name, phone, safe_word)
+    user = update_user(user_id, name=name, phone=phone, safe_word=safe_word)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return {"user": user}

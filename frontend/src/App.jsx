@@ -112,11 +112,19 @@ function App() {
     setLoading(false)
   }, [])
 
+  // Sanitize user object to never store sensitive safety credentials (e.g. safe_word) in localStorage
+  const sanitizeUserForStorage = (userData) => {
+    if (!userData) return null
+    const { safe_word, ...sanitized } = userData
+    return sanitized
+  }
+
   // Login handler
   const login = (token, userData) => {
     localStorage.setItem('shieldher_token', token)
-    localStorage.setItem('shieldher_user', JSON.stringify(userData))
-    setUser(userData)
+    const sanitized = sanitizeUserForStorage(userData)
+    localStorage.setItem('shieldher_user', JSON.stringify(sanitized))
+    setUser(sanitized)
   }
 
   // Logout handler
@@ -128,8 +136,9 @@ function App() {
 
   // Update user handler (e.g. from profile updates)
   const updateAuthUser = useCallback((userData) => {
-    localStorage.setItem('shieldher_user', JSON.stringify(userData))
-    setUser(userData)
+    const sanitized = sanitizeUserForStorage(userData)
+    localStorage.setItem('shieldher_user', JSON.stringify(sanitized))
+    setUser(sanitized)
   }, [])
 
   // Toast handler

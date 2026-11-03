@@ -78,21 +78,35 @@ export default function Profile() {
 
   // Browser Geolocation permission state
   const [geoPermission, setGeoPermission] = useState('checking') // checking | granted | prompt | denied | unsupported
+  const [contactsError, setContactsError] = useState(null)
 
   const loadProfileData = useCallback(async () => {
     setLoading(true)
+    setContactsError(null)
     try {
-      const [profileData, contactsData] = await Promise.all([
+      const [profileRes, contactsRes] = await Promise.allSettled([
         apiFetch('/api/me'),
-        apiFetch('/api/contacts').catch(() => ({ contacts: [] }))
+        apiFetch('/api/contacts')
       ])
 
-      const u = profileData.user || {}
-      setProfile(u)
-      setFormName(u.name || '')
-      setFormPhone(u.phone || '')
-      setFormSafeWord(u.safe_word || '')
-      setContacts(contactsData.contacts || [])
+      if (profileRes.status === 'fulfilled') {
+        const u = profileRes.value.user || {}
+        setProfile(u)
+        setFormName(u.name || '')
+        setFormPhone(u.phone || '')
+        setFormSafeWord(u.safe_word || '')
+      } else {
+        throw profileRes.reason || new Error('Failed to load profile')
+      }
+
+      if (contactsRes.status === 'fulfilled') {
+        setContacts(contactsRes.value.contacts || [])
+        setContactsError(null)
+      } else {
+        const msg = contactsRes.reason?.message || 'Unable to retrieve emergency contacts'
+        setContactsError(msg)
+        setContacts([])
+      }
     } catch (err) {
       showToast(err.message || 'Failed to load profile', 'error')
     } finally {
@@ -183,12 +197,12 @@ export default function Profile() {
 
     const normalizedPhone = trimmedPhone
       ? validateIndianMobile(trimmedPhone).normalized
-      : null
+      : ""
 
     const payload = {
       name: trimmedName,
       phone: normalizedPhone,
-      safe_word: formSafeWord.trim() || null,
+      safe_word: formSafeWord.trim(),
     }
 
     // Check if safe word was altered
@@ -222,7 +236,9 @@ export default function Profile() {
       setErrors({})
 
       if (updateAuthUser) {
-        updateAuthUser(updated)
+        // Explicitly strip safe_word from global AuthContext/storage
+        const { safe_word, ...safeUserData } = updated
+        updateAuthUser(safeUserData)
       }
 
       showToast('Profile and preferences updated successfully!', 'success')
@@ -302,7 +318,7 @@ export default function Profile() {
                 </p>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                   <span className="status-badge safe" style={{ fontSize: '0.64rem', padding: '2px 8px' }}>
-                    <span className="status-dot" aria-hidden="true" /> Verified Identity
+                    <span className="status-dot" aria-hidden="true" /> Active Account
                   </span>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', color: 'var(--muted-foreground)' }}>
                     Member since {formatCreationDate(profile?.created_at)}
@@ -502,15 +518,35 @@ export default function Profile() {
                     <span style={{ color: 'var(--accent)' }}><UsersIcon /></span>
                     <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Emergency Contact Network</span>
                   </div>
-                  <span className="status-badge safe" style={{ fontSize: '0.66rem' }}>
-                    {contacts.length} {contacts.length === 1 ? 'Contact' : 'Contacts'}
-                  </span>
+                  {contactsError ? (
+                    <span className="status-badge" style={{ fontSize: '0.66rem', background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>
+                      ⚠️ Sync Error
+                    </span>
+                  ) : (
+                    <span className="status-badge safe" style={{ fontSize: '0.66rem' }}>
+                      {contacts.length} {contacts.length === 1 ? 'Contact' : 'Contacts'}
+                    </span>
+                  )}
                 </div>
                 <p style={{ fontSize: '0.78rem', color: 'var(--muted-foreground)', marginBottom: '12px', lineHeight: 1.5 }}>
                   These trusted people receive SMS alerts with your real-time GPS location during an emergency.
                 </p>
 
-                {contacts.length === 0 ? (
+                {contactsError ? (
+                  <div style={{ padding: '10px 12px', background: 'rgba(239,68,68,0.08)', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.25)', marginBottom: '10px' }}>
+                    <p style={{ color: '#ef4444', fontSize: '0.8rem', margin: 0, lineHeight: 1.4 }}>
+                      ⚠️ <strong>Failed to retrieve contacts:</strong> {contactsError}
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={loadProfileData}
+                      style={{ marginTop: '8px', fontSize: '0.75rem', padding: '4px 8px', color: '#ef4444' }}
+                    >
+                      ⟳ Retry Loading Contacts
+                    </button>
+                  </div>
+                ) : contacts.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: '12px 0', color: 'var(--muted-foreground)', fontSize: '0.8rem' }}>
                     <p>No emergency contacts added yet.</p>
                   </div>
@@ -590,33 +626,53 @@ export default function Profile() {
                 </div>
               </div>
 
-              {/* Emergency Channels Overview (Supported Features Only) */}
+              {/* Emergency Channels Overview (Accurate Integration Status) */}
               <div className="glass-card-static">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
                   <span style={{ color: 'var(--accent)' }}><ShieldCheckIcon /></span>
-                  <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Emergency Channels</span>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div>
-                      <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>Twilio SMS Dispatch</div>
-                      <div style={{ fontSize: '0.74rem', color: 'var(--muted-foreground)' }}>Automatic SMS with live location to emergency contacts</div>
-                    </div>
-                    <span className="status-badge safe" style={{ fontSize: '0.64rem' }}>Supported</span>
+                  <div>
+                    <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Emergency Channels Status</span>
+                    <p style={{ fontSize: '0.72rem', color: 'var(--muted-foreground)', margin: '2px 0 0 0' }}>
+                      Integration and dispatch availability across alerting pipelines
+                    </p>
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {/* WhatsApp */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
                     <div>
                       <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>WhatsApp Emergency Link</div>
-                      <div style={{ fontSize: '0.74rem', color: 'var(--muted-foreground)' }}>One-click direct WhatsApp pre-filled message generation</div>
+                      <div style={{ fontSize: '0.74rem', color: 'var(--muted-foreground)', lineHeight: 1.4 }}>
+                        Direct client deep link (<span style={{ fontFamily: 'var(--font-mono)' }}>wa.me</span>) with pre-filled SOS text and live GPS coordinates
+                      </div>
                     </div>
-                    <span className="status-badge safe" style={{ fontSize: '0.64rem' }}>Active</span>
+                    <span className="status-badge safe" style={{ fontSize: '0.64rem', whiteSpace: 'nowrap' }}>Client Deep Link</span>
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+
+                  {/* Twilio SMS */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
                     <div>
-                      <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>Police Helpline Notification</div>
-                      <div style={{ fontSize: '0.74rem', color: 'var(--muted-foreground)' }}>Option to alert police liaison during SOS</div>
+                      <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>Twilio SMS Dispatch</div>
+                      <div style={{ fontSize: '0.74rem', color: 'var(--muted-foreground)', lineHeight: 1.4 }}>
+                        Automated backend SMS delivery to contacts; runs in simulated mode when Twilio API credentials are not configured in backend
+                      </div>
                     </div>
-                    <span className="status-badge" style={{ fontSize: '0.64rem', background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}>Optional</span>
+                    <span className="status-badge" style={{ fontSize: '0.64rem', whiteSpace: 'nowrap', background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}>
+                      Requires API Setup
+                    </span>
+                  </div>
+
+                  {/* Police Liaison */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+                    <div>
+                      <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>Police Liaison Dispatch</div>
+                      <div style={{ fontSize: '0.74rem', color: 'var(--muted-foreground)', lineHeight: 1.4 }}>
+                        Direct automated police liaison SMS gateway; emergency calls (100 / 1091) require cellular dialer
+                      </div>
+                    </div>
+                    <span className="status-badge" style={{ fontSize: '0.64rem', whiteSpace: 'nowrap', background: 'rgba(148,163,184,0.15)', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.3)' }}>
+                      Unconfigured / Planned
+                    </span>
                   </div>
                 </div>
               </div>
