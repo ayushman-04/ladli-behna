@@ -1612,3 +1612,32 @@ h4 { font-size: 1.05rem; }
 .reveal-delay-4 { transition-delay: 0.26s; }
 .reveal-delay-5 { transition-delay: 0.33s; }
 .reveal-delay-6 { transition-delay: 0.40s; }
+
+/* Leaflet dark styling & popups */
+.custom-map-icon {
+  background: transparent !important;
+  border: none !important;
+}
+
+.leaflet-popup-content-wrapper {
+  background: rgba(24, 10, 20, 0.94) !important;
+  color: var(--foreground) !important;
+  border: 1px solid rgba(236, 168, 214, 0.25) !important;
+  border-radius: 6px !important;
+  backdrop-filter: blur(12px) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6) !important;
+}
+
+.leaflet-popup-tip {
+  background: rgba(24, 10, 20, 0.94) !important;
+  border: 1px solid rgba(236, 168, 214, 0.25) !important;
+}
+
+.leaflet-container a.leaflet-popup-close-button {
+  color: var(--muted-foreground) !important;
+  padding: 6px !important;
+}
+
+.hazard-list .police-item {
+  border-color: rgba(239, 68, 68, 0.22);
+}

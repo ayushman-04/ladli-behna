@@ -1,0 +1,12 @@
+{
+  "name": "ladli-behna",
+  "version": "1.0.0",
+  "description": "Safety That Starts Before SOS",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "preview": "npm --prefix frontend run preview",
+    "backend": "python -m uvicorn backend.main:app --reload --port 8000"
+  }
+}

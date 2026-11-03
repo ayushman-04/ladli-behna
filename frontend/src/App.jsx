@@ -16,7 +16,7 @@ import Hub from './pages/Hub'
 // API Helper
 // ============================================
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
 export async function apiFetch(path, options = {}) {
   const token = localStorage.getItem('shieldher_token')
