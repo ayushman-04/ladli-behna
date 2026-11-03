@@ -35,6 +35,7 @@ export default function ShieldMode() {
   const [uploadResult, setUploadResult] = useState(null)
   const [recordedBlob, setRecordedBlob] = useState(null)
   const [selectedFile, setSelectedFile] = useState(null)
+  const [audioUrl, setAudioUrl] = useState(null)
   const [micPermissionDenied, setMicPermissionDenied] = useState(false)
   const [analysisStatus, setAnalysisStatus] = useState('idle') // idle | processing | available | unavailable
 
@@ -472,11 +473,27 @@ export default function ShieldMode() {
   /** Discard the current recording or selected file and reset upload state */
   const discardRecording = useCallback(() => {
     setRecordedBlob(null)
+    setSelectedFile(null)
     setUploadResult(null)
     setAnalysisStatus('idle')
     setRecordingTime(0)
     recordingChunksRef.current = []
+    if (fileInputRef.current) fileInputRef.current.value = ''
   }, [])
+
+  // Safely manage audio preview URL and revoke when done to prevent memory leaks
+  useEffect(() => {
+    const source = recordedBlob || selectedFile
+    if (source) {
+      const url = URL.createObjectURL(source)
+      setAudioUrl(url)
+      return () => {
+        URL.revokeObjectURL(url)
+      }
+    } else {
+      setAudioUrl(null)
+    }
+  }, [recordedBlob, selectedFile])
 
   /** Stop mic stream and timer used by the upload recorder */
   const _stopUploadRecorderCleanup = useCallback(() => {
@@ -657,18 +674,23 @@ export default function ShieldMode() {
         body: form,
       })
 
-      const data = await res.json()
+      let data = null
+      try {
+        data = await res.json()
+      } catch (parseErr) {
+        data = null
+      }
 
       if (!res.ok) {
         const errMsg = data?.detail || `Server error ${res.status}`
         showToast(`Upload failed: ${errMsg}`, 'error')
         setAnalysisStatus('unavailable')
-        // Show ANALYSIS UNAVAILABLE — never silently classify as SAFE
+        // Show ANALYSIS UNAVAILABLE — never classify an API failure as SAFE
         setUploadResult({
           threat_level: 'ANALYSIS UNAVAILABLE',
           confidence: 0,
           reason: errMsg,
-          recommended_action: 'Could not reach the analysis service. Stay alert.',
+          recommended_action: 'Analysis service is unavailable. Manual SOS is available below.',
           transcript: '',
         })
         return
@@ -688,20 +710,29 @@ export default function ShieldMode() {
         return
       }
 
-      // Detect API key absent / demo mode from backend
+      // Detect API key absent, demo mode, or error reported by backend
+      const reasonText = (analysis.reason || '').toLowerCase()
       const isUnavailable =
-        analysis.threat_level === 'SAFE' &&
-        typeof analysis.reason === 'string' &&
-        (analysis.reason.toLowerCase().includes('not configured') ||
-         analysis.reason.toLowerCase().includes('demo mode'))
+        analysis.threat_level === 'ANALYSIS UNAVAILABLE' ||
+        analysis.threat_level === 'ERROR' ||
+        (analysis.threat_level === 'SAFE' && analysis.confidence === 0) ||
+        reasonText.includes('not configured') ||
+        reasonText.includes('demo mode') ||
+        reasonText.includes('temporarily unavailable') ||
+        reasonText.includes('analysis error') ||
+        reasonText.includes('error code') ||
+        reasonText.includes('incorrect api key') ||
+        reasonText.includes('invalid_api_key') ||
+        reasonText.includes('api key')
 
       if (isUnavailable) {
         setAnalysisStatus('unavailable')
         setUploadResult({
           ...analysis,
           threat_level: 'ANALYSIS UNAVAILABLE',
-          reason: 'AI analysis is unavailable (API key not configured). Local keyword detection is still active.',
-          recommended_action: 'Use manual SOS if you feel unsafe. Configure OPENAI_API_KEY for full analysis.',
+          confidence: 0,
+          reason: analysis.reason || 'AI analysis is unavailable (API key not configured or invalid). Local keyword-based detection remains active.',
+          recommended_action: 'Use manual SOS if you feel unsafe. Stay alert.',
         })
       } else {
         setAnalysisStatus('available')
@@ -722,7 +753,7 @@ export default function ShieldMode() {
         threat_level: 'ANALYSIS UNAVAILABLE',
         confidence: 0,
         reason: `Connection error: ${msg}`,
-        recommended_action: 'Check that the backend is running and try again.',
+        recommended_action: 'Check that backend is running and try again. Use manual SOS if in danger.',
         transcript: '',
       })
     } finally {
@@ -904,13 +935,12 @@ export default function ShieldMode() {
               <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>
                 {recordedBlob ? `Recorded clip (${formatTime(recordingTime)})` : selectedFile?.name}
               </span>
-              <button className="btn btn-ghost btn-sm" onClick={() => { discardRecording(); setSelectedFile(null) }} aria-label="Discard recording">
+              <button className="btn btn-ghost btn-sm" onClick={discardRecording} aria-label="Discard recording">
                 &times;
               </button>
             </div>
 
-            {recordedBlob && <audio controls src={URL.createObjectURL(recordedBlob)} style={{ width: '100%', marginBottom: '10px' }} />}
-            {selectedFile && <audio controls src={URL.createObjectURL(selectedFile)} style={{ width: '100%', marginBottom: '10px' }} />}
+            {audioUrl && <audio controls src={audioUrl} style={{ width: '100%', marginBottom: '10px' }} />}
 
             <button id="shield-analyze-btn" className="btn btn-primary btn-full" onClick={analyzeAudio} disabled={uploadingAudio}>
               {uploadingAudio ? (
@@ -966,8 +996,32 @@ export default function ShieldMode() {
               <p style={{ fontFamily: 'var(--font-mono)', fontSize: '0.66rem', color: 'var(--muted-foreground)', marginBottom: '3px', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Recommended Action</p>
               <p style={{ fontSize: '0.83rem', fontWeight: 600 }}>{uploadResult.recommended_action}</p>
             </div>
+
+            {/* Quick manual SOS when threat is danger or analysis unavailable */}
+            {(uploadResult.threat_level === 'DANGER' || uploadResult.threat_level === 'ANALYSIS UNAVAILABLE') && (
+              <button
+                id="shield-result-sos-btn"
+                className="btn btn-danger btn-full"
+                onClick={() => triggerEmergency('shield_audio')}
+                style={{ marginTop: '12px' }}
+              >
+                🚨 Trigger Emergency SOS
+              </button>
+            )}
           </div>
         )}
+
+        {/* Persistent Manual SOS trigger */}
+        <div style={{ marginTop: '16px' }}>
+          <button
+            id="shield-manual-sos-btn"
+            className="btn btn-danger btn-full"
+            onClick={() => triggerEmergency('shield_manual')}
+            aria-label="Trigger Emergency SOS"
+          >
+            🚨 Emergency SOS
+          </button>
+        </div>
       </div>
 
       {/* How it works — inactive only */}
