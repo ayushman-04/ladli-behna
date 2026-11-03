@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useEmergency, useToast } from '../App'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const WS_BASE = API_BASE.replace(/^http/, 'ws')
 
 export default function ShieldMode() {

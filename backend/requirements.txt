@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-jose[cryptography]
+bcrypt
+python-multipart
+python-dotenv
+openai
+requests
+psycopg2-binary
+pydantic[email-validator]
+email-validator

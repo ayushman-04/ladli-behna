@@ -10,8 +10,10 @@ import bcrypt
 from jose import jwt, JWTError
 from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pathlib import Path
 from dotenv import load_dotenv
 
+load_dotenv(Path(__file__).resolve().parent / ".env")
 load_dotenv()
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "shieldher-hackathon-secret")
