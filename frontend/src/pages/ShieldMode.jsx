@@ -57,6 +57,7 @@ export default function ShieldMode() {
   const uploadStreamRef = useRef(null)     // mic stream used only for upload recording
   const recordingTimerRef = useRef(null)   // setInterval id for the duration counter
   const recordingChunksRef = useRef([])    // audio chunks accumulated during recording
+  const isRecordingRef = useRef(false)     // synchronous lock preventing overlapping recording sessions
 
   const sendWsJson = useCallback((payload) => {
     const ws = websocketRef.current
@@ -314,16 +315,30 @@ export default function ShieldMode() {
   }, [threatLevel, showToast])
 
   const startAudioStreaming = useCallback((stream) => {
-    if (!stream || !window.MediaRecorder) {
+    const hasMediaRecorder = typeof window !== 'undefined' && typeof window.MediaRecorder !== 'undefined'
+    if (!stream || !hasMediaRecorder) {
       showToast('Audio streaming not supported in this browser', 'warning')
       return
     }
 
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : 'audio/webm'
+    const isTypeSupported = typeof window.MediaRecorder.isTypeSupported === 'function'
+      ? (type) => window.MediaRecorder.isTypeSupported(type)
+      : () => false
 
-    const recorder = new MediaRecorder(stream, { mimeType })
+    const mimeType = isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : ''
+
+    let recorder
+    try {
+      recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
+    } catch (e) {
+      showToast('Failed to initialize audio streaming', 'warning')
+      return
+    }
+
     recorder.ondataavailable = async (event) => {
       const ws = websocketRef.current
       if (!event.data.size || !ws || ws.readyState !== WebSocket.OPEN) return
@@ -472,6 +487,23 @@ export default function ShieldMode() {
 
   /** Discard the current recording or selected file and reset upload state */
   const discardRecording = useCallback(() => {
+    if (isRecordingRef.current) {
+      isRecordingRef.current = false
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current)
+        recordingTimerRef.current = null
+      }
+      if (uploadRecorderRef.current && uploadRecorderRef.current.state !== 'inactive') {
+        try { uploadRecorderRef.current.stop() } catch (e) { /* ignore */ }
+      }
+      if (uploadStreamRef.current) {
+        uploadStreamRef.current.getTracks().forEach(t => t.stop())
+        uploadStreamRef.current = null
+      }
+      uploadRecorderRef.current = null
+      setRecording(false)
+    }
+
     setRecordedBlob(null)
     setSelectedFile(null)
     setUploadResult(null)
@@ -497,30 +529,44 @@ export default function ShieldMode() {
 
   /** Stop mic stream and timer used by the upload recorder */
   const _stopUploadRecorderCleanup = useCallback(() => {
+    isRecordingRef.current = false
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current)
       recordingTimerRef.current = null
+    }
+    if (uploadRecorderRef.current && uploadRecorderRef.current.state !== 'inactive') {
+      try { uploadRecorderRef.current.stop() } catch (e) { /* ignore */ }
     }
     if (uploadStreamRef.current) {
       uploadStreamRef.current.getTracks().forEach(t => t.stop())
       uploadStreamRef.current = null
     }
     uploadRecorderRef.current = null
+    setRecording(false)
   }, [])
 
   /** Start a new audio recording for the upload / analyze section */
   const startRecording = useCallback(async () => {
-    // Guard: don't double-start
-    if (recording) return
+    // Guard: synchronous ref lock prevents overlapping recording sessions
+    if (isRecordingRef.current) return
+    isRecordingRef.current = true
 
     setMicPermissionDenied(false)
     discardRecording()
     setSelectedFile(null)
 
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      isRecordingRef.current = false
+      showToast('Microphone access is not supported in this browser.', 'error')
+      return
+    }
+
     let stream
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
     } catch (err) {
+      isRecordingRef.current = false
+      setRecording(false)
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         setMicPermissionDenied(true)
         showToast('Microphone permission denied. Please allow mic access and try again.', 'error')
@@ -533,9 +579,25 @@ export default function ShieldMode() {
     uploadStreamRef.current = stream
     recordingChunksRef.current = []
 
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    const hasMediaRecorder = typeof window !== 'undefined' && typeof window.MediaRecorder !== 'undefined'
+    if (!hasMediaRecorder) {
+      showToast('Audio recording is not supported in this browser', 'error')
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop())
+        uploadStreamRef.current = null
+      }
+      isRecordingRef.current = false
+      setRecording(false)
+      return
+    }
+
+    const isTypeSupported = typeof window.MediaRecorder.isTypeSupported === 'function'
+      ? (type) => window.MediaRecorder.isTypeSupported(type)
+      : () => false
+
+    const mimeType = isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus'
-      : MediaRecorder.isTypeSupported('audio/webm')
+      : isTypeSupported('audio/webm')
         ? 'audio/webm'
         : ''
 
@@ -548,6 +610,8 @@ export default function ShieldMode() {
       showToast(`Recording not supported in this browser: ${err.message}`, 'error')
       stream.getTracks().forEach(t => t.stop())
       uploadStreamRef.current = null
+      isRecordingRef.current = false
+      setRecording(false)
       return
     }
 
@@ -559,6 +623,7 @@ export default function ShieldMode() {
 
     recorder.onerror = (e) => {
       showToast(`Recording error: ${e.error?.message || 'Unknown error'}`, 'error')
+      isRecordingRef.current = false
       setRecording(false)
       _stopUploadRecorderCleanup()
     }
@@ -575,28 +640,31 @@ export default function ShieldMode() {
     }
 
     uploadRecorderRef.current = recorder
-    recorder.start(250) // collect chunks every 250 ms
-    setRecording(true)
-    setRecordingTime(0)
+    try {
+      recorder.start(250) // collect chunks every 250 ms
+      setRecording(true)
+      setRecordingTime(0)
 
-    // Increment timer every second
-    recordingTimerRef.current = setInterval(() => {
-      setRecordingTime(prev => prev + 1)
-    }, 1000)
-  }, [recording, discardRecording, showToast, _stopUploadRecorderCleanup])
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1)
+      }, 1000)
+    } catch (startErr) {
+      showToast(`Failed to start recording: ${startErr.message}`, 'error')
+      _stopUploadRecorderCleanup()
+    }
+  }, [discardRecording, showToast, _stopUploadRecorderCleanup])
 
   /** Stop the active upload recording */
   const stopRecording = useCallback(() => {
+    isRecordingRef.current = false
     const recorder = uploadRecorderRef.current
-    if (!recorder) return
 
-    // Stop the timer first so the frozen duration stays accurate
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current)
       recordingTimerRef.current = null
     }
 
-    if (recorder.state !== 'inactive') {
+    if (recorder && recorder.state !== 'inactive') {
       try {
         recorder.requestData() // flush remaining data
         recorder.stop()
@@ -605,7 +673,6 @@ export default function ShieldMode() {
       }
     }
 
-    // Stop the mic stream (separate from the realtime monitor stream)
     if (uploadStreamRef.current) {
       uploadStreamRef.current.getTracks().forEach(t => t.stop())
       uploadStreamRef.current = null
@@ -646,28 +713,32 @@ export default function ShieldMode() {
     setUploadResult(null)
     setAnalysisStatus('processing')
 
-    const form = new FormData()
-    const filename = selectedFile
-      ? selectedFile.name
-      : `recording_${Date.now()}.webm`
-    form.append('audio', audioSource, filename)
-
-    // Optionally attach location
-    if (navigator.geolocation) {
-      await new Promise((resolve) => {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            form.append('latitude', pos.coords.latitude)
-            form.append('longitude', pos.coords.longitude)
-            resolve()
-          },
-          () => resolve(), // location optional — continue without it
-          { timeout: 3000 }
-        )
-      })
-    }
-
     try {
+      const form = new FormData()
+      const filename = selectedFile
+        ? selectedFile.name
+        : `recording_${Date.now()}.webm`
+      form.append('audio', audioSource, filename)
+
+      // Optionally attach location inside try lifecycle
+      if (navigator.geolocation) {
+        try {
+          await new Promise((resolve) => {
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                form.append('latitude', pos.coords.latitude)
+                form.append('longitude', pos.coords.longitude)
+                resolve()
+              },
+              () => resolve(), // location optional — continue without it
+              { timeout: 3000 }
+            )
+          })
+        } catch (geoErr) {
+          // Geolocation failure is non-blocking
+        }
+      }
+
       const res = await fetch(`${API_BASE}/api/audio/upload`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
@@ -723,7 +794,8 @@ export default function ShieldMode() {
         reasonText.includes('error code') ||
         reasonText.includes('incorrect api key') ||
         reasonText.includes('invalid_api_key') ||
-        reasonText.includes('api key')
+        reasonText.includes('api key') ||
+        reasonText.includes('failed')
 
       if (isUnavailable) {
         setAnalysisStatus('unavailable')
@@ -746,7 +818,7 @@ export default function ShieldMode() {
         }
       }
     } catch (err) {
-      const msg = err.message || 'Network error'
+      const msg = err?.message || 'Network error'
       showToast(`Analysis failed: ${msg}`, 'error')
       setAnalysisStatus('unavailable')
       setUploadResult({
