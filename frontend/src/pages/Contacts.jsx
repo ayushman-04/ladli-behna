@@ -45,9 +45,19 @@ export default function Contacts() {
   const loadContacts = async () => {
     try {
       const data = await apiFetch('/api/contacts')
-      setContacts(data.contacts || [])
+      const list = data.contacts || []
+      setContacts(list)
+      try {
+        localStorage.setItem('shieldher_contacts_cache', JSON.stringify(list))
+      } catch (e) {
+        // storage quota or private mode
+      }
     } catch (err) {
       console.error('Load contacts error:', err)
+      try {
+        const cached = localStorage.getItem('shieldher_contacts_cache')
+        if (cached) setContacts(JSON.parse(cached))
+      } catch (e) {}
     } finally {
       setLoading(false)
     }

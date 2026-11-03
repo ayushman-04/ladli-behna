@@ -201,8 +201,8 @@ class TranscriptRequest(BaseModel):
     longitude: Optional[float] = None
 
 class EmergencyRequest(BaseModel):
-    latitude: float
-    longitude: float
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     type: str = "manual"  # manual, audio, shake
     transcript: Optional[str] = None
     notify_police: bool = False  # Optional: also SMS police helpline (user's choice)
@@ -402,7 +402,11 @@ def trigger_emergency(req: EmergencyRequest, user_id: int = Depends(get_current_
 
     contacts = get_contacts(user_id)
     user = get_user_by_id(user_id)
-    maps_link = f"https://www.google.com/maps?q={req.latitude},{req.longitude}"
+    maps_link = (
+        f"https://www.google.com/maps?q={req.latitude},{req.longitude}"
+        if (req.latitude is not None and req.longitude is not None)
+        else None
+    )
     sos_message = notification.get("message", "")
     sms_results = notification.get("sms_results", [])
 
@@ -411,15 +415,15 @@ def trigger_emergency(req: EmergencyRequest, user_id: int = Depends(get_current_
     # -------------------------------------------------------
     police_sms_result = None
     if req.notify_police:
-        # India women helpline as example; adapt as needed
+        location_line = f"Location: {maps_link}\n" if maps_link else "Location: unavailable\n"
         police_msg = (
             f"\U0001f6a8 POLICE ASSISTANCE NEEDED\n"
             f"Name: {user['name']}\n"
             f"Phone: {user.get('phone', 'N/A')}\n"
-            f"Location: {maps_link}\n"
+            f"{location_line}"
             f"Time: {datetime.now().strftime('%I:%M %p, %b %d %Y')}"
         )
-        # NOTE: Real emergency numbers (100, 911) don't accept SMS.
+        # NOTE: Real emergency numbers (100, 112) don't accept SMS.
         # This would go to a configured police liaison number in production.
         police_number = os.getenv("POLICE_SMS_NUMBER", "").strip()
         if police_number:
@@ -453,9 +457,9 @@ def trigger_emergency(req: EmergencyRequest, user_id: int = Depends(get_current_
         "sms_warning": None if any_sms_sent else "SMS delivery failed - use WhatsApp links below",
         "police_notified": police_sms_result,
         "emergency_numbers": [
-            {"name": "Police (India)", "phone": "100", "tel_link": "tel:100"},
-            {"name": "Women Helpline", "phone": "1091", "tel_link": "tel:1091"},
-            {"name": "Emergency (US)", "phone": "911", "tel_link": "tel:911"}
+            {"name": "National Emergency (ERSS)", "phone": "112", "tel_link": "tel:112"},
+            {"name": "Women Helpline (All India)", "phone": "1091", "tel_link": "tel:1091"},
+            {"name": "Police Control Room", "phone": "100", "tel_link": "tel:100"},
         ],
         "maps_link": maps_link
     }
